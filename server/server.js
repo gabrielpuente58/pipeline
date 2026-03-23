@@ -91,23 +91,23 @@ class GenerateRemindersTool extends StructuredTool {
 
 const graphStateData = {
   athlete: {
-    value: (x, y) => y,
+    value: (_x, y) => y,
     default: () => null,
   },
   mealPlan: {
-    value: (x, y) => y,
+    value: (_x, y) => y,
     default: () => null,
   },
   reminders: {
-    value: (x, y) => y,
+    value: (_x, y) => y,
     default: () => null,
   },
   messages: {
-    value: (x, y) => x.concat(y),
+    value: (_x, y) => _x.concat(y),
     default: () => [],
   },
   toolCalls: {
-    value: (x, y) => x.concat(y),
+    value: (_x, y) => _x.concat(y),
     default: () => [],
   },
 };
@@ -264,7 +264,7 @@ Include 10-15 reminders spanning from 90 days out to race day. Do not include an
   };
 }
 
-async function submitResultsNode(state) {
+async function submitResultsNode(_state) {
   console.log("submitResultsNode: persisting results");
   return {};
 }
@@ -336,7 +336,7 @@ app.post("/athlete", async (req, res) => {
 });
 
 // GET /athlete — get athlete profile
-app.get("/athlete", async (req, res) => {
+app.get("/athlete", async (_req, res) => {
   try {
     const athlete = await Athlete.findOne();
     if (!athlete) return res.status(404).json({ error: "No athlete profile found" });
@@ -361,7 +361,7 @@ app.put("/athlete/:id", async (req, res) => {
 });
 
 // GET /checklist — get all checklist items
-app.get("/checklist", async (req, res) => {
+app.get("/checklist", async (_req, res) => {
   try {
     const items = await ChecklistItem.find().sort({ category: 1, name: 1 });
     res.json(items);
@@ -430,7 +430,7 @@ app.post("/generate-plan", async (req, res) => {
 });
 
 // GET /meal-plan — get saved meal plan
-app.get("/meal-plan", async (req, res) => {
+app.get("/meal-plan", async (_req, res) => {
   try {
     const mealPlan = await MealPlan.findOne().sort({ createdAt: -1 });
     if (!mealPlan) return res.status(404).json({ error: "No meal plan found" });
@@ -441,7 +441,7 @@ app.get("/meal-plan", async (req, res) => {
 });
 
 // GET /reminders — get reminders sorted by daysBeforeRace
-app.get("/reminders", async (req, res) => {
+app.get("/reminders", async (_req, res) => {
   try {
     const reminders = await Reminder.find().sort({ daysBeforeRace: -1 });
     res.json(reminders);
