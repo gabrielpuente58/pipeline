@@ -5,240 +5,244 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Pipeline</title>
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
   </head>
   <body>
-    <div id="app">
+    <div id="app" class="layout">
 
-      <!-- HEADER -->
-      <header>
-        <div class="header-brand">
-          <span class="material-symbols-outlined brand-icon">work</span>
-          <div>
-            <h1>Pipeline</h1>
-            <p class="subtitle">Job Application Tracker</p>
-          </div>
+      <!-- ── SIDEBAR ── -->
+      <aside class="sidebar">
+        <div class="sidebar-logo">
+          <span class="logo-mark">◈</span>
+          <span class="logo-text">Pipeline</span>
         </div>
-        <div class="header-right">
-          <div class="stat-pills">
-            <span class="stat-pill">{{ applications.length }} total</span>
-            <span class="stat-pill highlight">{{ activeCount }} active</span>
-          </div>
-          <div :class="['gmail-status', gmailConnected ? 'connected' : '']">
-            <span class="material-symbols-outlined">mail</span>
+
+        <nav class="sidebar-nav">
+          <button
+            v-for="tab in tabs" :key="tab.id"
+            :class="['nav-item', { active: activeTab === tab.id }]"
+            @click="activeTab = tab.id"
+          >
+            <span class="material-symbols-outlined">{{ tab.icon }}</span>
+            {{ tab.label }}
+            <span v-if="tab.id === 'followups' && pendingCount > 0" class="nav-badge">{{ pendingCount }}</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div :class="['gmail-pill', gmailConnected ? 'on' : 'off']">
+            <span class="dot"></span>
             {{ gmailConnected ? 'Gmail connected' : 'Gmail disconnected' }}
           </div>
         </div>
-      </header>
+      </aside>
 
-      <!-- TABS -->
-      <nav class="tabs">
-        <button v-for="tab in tabs" :key="tab.id"
-          :class="['tab-btn', { active: activeTab === tab.id }]"
-          @click="activeTab = tab.id">
-          <span class="material-symbols-outlined">{{ tab.icon }}</span>
-          {{ tab.label }}
-        </button>
-      </nav>
+      <!-- ── MAIN CONTENT ── -->
+      <main class="content">
 
-      <!-- GLOBAL MESSAGE -->
-      <div v-if="message" :class="['message', messageType]">
-        {{ message }}
-      </div>
+        <!-- global message -->
+        <div v-if="message" :class="['toast', messageType]">{{ message }}</div>
 
-      <!-- ═══════════════════════════ APPLICATIONS ═══════════════════════════ -->
-      <section v-show="activeTab === 'applications'" class="tab-content">
+        <!-- ══════════════ APPLICATIONS ══════════════ -->
+        <section v-show="activeTab === 'applications'">
 
-        <!-- Stats row -->
-        <div class="stats-row">
-          <div v-for="s in statusList" :key="s.value" class="stat-box">
-            <span :class="['stat-num', `s-${s.value}`]">{{ countByStatus(s.value) }}</span>
-            <span class="stat-lbl">{{ s.label }}</span>
+          <div class="page-header">
+            <div>
+              <h1>Applications</h1>
+              <p class="page-sub">Track every job you've applied to</p>
+            </div>
+            <div class="page-actions">
+              <button class="btn-secondary" @click="scanInbox" :disabled="scanning">
+                <span class="material-symbols-outlined">inbox</span>
+                {{ scanning ? 'Scanning…' : 'Scan Inbox' }}
+              </button>
+              <button class="btn-primary" @click="openModal(null)">
+                <span class="material-symbols-outlined">add</span> Add
+              </button>
+            </div>
           </div>
-        </div>
 
-        <!-- Toolbar -->
-        <div class="toolbar">
-          <div class="filters">
-            <button v-for="s in [{value:'all',label:'All'}, ...statusList]" :key="s.value"
-              :class="['filter-btn', { active: appFilter === s.value }]"
-              @click="appFilter = s.value">
-              {{ s.label }}
-            </button>
+          <!-- stat cards -->
+          <div class="stat-row">
+            <div class="stat-card" v-for="s in statusList" :key="s.value">
+              <div :class="['stat-num', `c-${s.value}`]">{{ countByStatus(s.value) }}</div>
+              <div class="stat-label">{{ s.label }}</div>
+            </div>
           </div>
-          <div class="toolbar-actions">
-            <button class="btn-outline" @click="scanInbox" :disabled="scanning">
-              <span class="material-symbols-outlined">{{ scanning ? 'progress_activity' : 'inbox' }}</span>
-              {{ scanning ? 'Scanning...' : 'Scan Inbox' }}
-            </button>
-            <button class="btn-primary" @click="openModal(null)">
-              <span class="material-symbols-outlined">add</span> Add
-            </button>
-          </div>
-        </div>
 
-        <!-- Application list -->
-        <div v-if="loading" class="empty">
-          <span class="material-symbols-outlined spin">progress_activity</span>
-        </div>
-        <div v-else-if="filtered.length === 0" class="empty">
-          <span class="material-symbols-outlined">work_off</span>
-          <p>No applications{{ appFilter !== 'all' ? ' with status "' + appFilter + '"' : '' }}.</p>
-        </div>
-        <div v-else class="app-list">
-          <div v-for="app in filtered" :key="app._id" class="app-card">
-            <div class="app-card-body">
-              <div class="app-main">
-                <div class="app-company">{{ app.company }}</div>
-                <div class="app-position">{{ app.position }}</div>
-                <div class="app-meta">
-                  <span v-if="app.contactName">
-                    <span class="material-symbols-outlined">person</span> {{ app.contactName }}
-                  </span>
-                  <span>
-                    <span class="material-symbols-outlined">calendar_today</span> {{ fmtDate(app.appliedDate) }}
-                  </span>
-                  <a v-if="app.jobUrl" :href="app.jobUrl" target="_blank" class="link">
-                    <span class="material-symbols-outlined">open_in_new</span> Job post
-                  </a>
+          <!-- filter strip -->
+          <div class="filter-strip">
+            <button
+              v-for="f in [{value:'all', label:'All'}, ...statusList]" :key="f.value"
+              :class="['chip', { active: appFilter === f.value }]"
+              @click="appFilter = f.value"
+            >{{ f.label }}</button>
+          </div>
+
+          <!-- table -->
+          <div v-if="loading" class="empty-state">
+            <span class="material-symbols-outlined spin">progress_activity</span>
+          </div>
+          <div v-else-if="filtered.length === 0" class="empty-state">
+            <span class="material-symbols-outlined">work_off</span>
+            <p>No applications here yet.</p>
+          </div>
+          <div v-else class="table-wrap">
+            <table class="app-table">
+              <thead>
+                <tr>
+                  <th>Company</th>
+                  <th>Position</th>
+                  <th>Status</th>
+                  <th>Applied</th>
+                  <th>Contact</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="app in filtered" :key="app._id" class="app-row">
+                  <td class="td-company">{{ app.company }}</td>
+                  <td class="td-pos">{{ app.position }}</td>
+                  <td><span :class="['status-chip', `c-${app.status}`]">{{ app.status }}</span></td>
+                  <td class="td-muted">{{ fmtDate(app.appliedDate) }}</td>
+                  <td class="td-muted">{{ app.contactName || '—' }}</td>
+                  <td class="td-actions">
+                    <button class="row-btn" @click="openModal(app)" title="Edit">
+                      <span class="material-symbols-outlined">edit</span>
+                    </button>
+                    <button class="row-btn danger" @click="deleteApp(app._id)" title="Delete">
+                      <span class="material-symbols-outlined">delete</span>
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ══════════════ FOLLOW-UPS ══════════════ -->
+        <section v-show="activeTab === 'followups'">
+
+          <div class="page-header">
+            <div>
+              <h1>Follow-ups</h1>
+              <p class="page-sub">AI-drafted emails for silent applications</p>
+            </div>
+          </div>
+
+          <div v-if="followUps.length === 0" class="empty-state">
+            <span class="material-symbols-outlined">mark_email_unread</span>
+            <p>No drafts yet — run Scan Inbox from the Applications tab.</p>
+          </div>
+
+          <div v-else class="fu-list">
+            <div v-for="fu in followUps" :key="fu._id" :class="['fu-card', { sent: fu.sent }]">
+              <div class="fu-card-header">
+                <div class="fu-card-meta">
+                  <span class="fu-company">{{ fu.applicationId?.company }} · {{ fu.applicationId?.position }}</span>
+                  <span v-if="fu.draftedByAI" class="tag purple">AI draft</span>
+                  <span v-if="fu.sent" class="tag green">Sent</span>
                 </div>
-                <p v-if="app.notes" class="app-notes">{{ app.notes }}</p>
-              </div>
-              <div class="app-side">
-                <span :class="['badge', `s-${app.status}`]">{{ app.status }}</span>
-                <div class="row-btns">
-                  <button class="icon-btn" @click="openModal(app)">
-                    <span class="material-symbols-outlined">edit</span>
+                <div class="fu-card-actions">
+                  <button v-if="!fu.sent" class="btn-secondary small" @click="markSent(fu)">
+                    <span class="material-symbols-outlined">send</span> Mark sent
                   </button>
-                  <button class="icon-btn red" @click="deleteApp(app._id)">
+                  <button class="row-btn danger" @click="deleteFollowUp(fu._id)">
                     <span class="material-symbols-outlined">delete</span>
                   </button>
                 </div>
               </div>
+              <p class="fu-subject">{{ fu.subject }}</p>
+              <pre class="fu-body">{{ fu.body }}</pre>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- ═══════════════════════════ FOLLOW-UPS ════════════════════════════ -->
-      <section v-show="activeTab === 'followups'" class="tab-content">
-        <div class="section-header">
-          <h2>Follow-ups</h2>
-          <span class="count-badge">{{ pendingCount }} pending</span>
-        </div>
+        <!-- ══════════════ ACTIVITY ══════════════ -->
+        <section v-show="activeTab === 'activity'">
 
-        <div v-if="followUps.length === 0" class="empty">
-          <span class="material-symbols-outlined">mark_email_unread</span>
-          <p>No follow-ups yet. Click "Scan Inbox" to auto-generate drafts for silent applications.</p>
-        </div>
+          <div class="page-header">
+            <div>
+              <h1>Activity</h1>
+              <p class="page-sub">Everything that's happened in your pipeline</p>
+            </div>
+          </div>
 
-        <div v-else class="followup-list">
-          <div v-for="fu in followUps" :key="fu._id" :class="['fu-card', { sent: fu.sent }]">
-            <div class="fu-top">
-              <div class="fu-meta">
-                <span class="fu-app">{{ fu.applicationId?.company }} · {{ fu.applicationId?.position }}</span>
-                <span v-if="fu.draftedByAI" class="ai-tag">
-                  <span class="material-symbols-outlined">auto_awesome</span> AI draft
-                </span>
-                <span v-if="fu.sent" class="sent-tag">
-                  <span class="material-symbols-outlined">check</span> Sent
-                </span>
-              </div>
-              <div class="fu-actions">
-                <button v-if="!fu.sent" class="btn-outline small" @click="markSent(fu)">
-                  <span class="material-symbols-outlined">send</span> Mark sent
-                </button>
-                <button class="icon-btn red" @click="deleteFollowUp(fu._id)">
-                  <span class="material-symbols-outlined">delete</span>
-                </button>
+          <div v-if="activityLogs.length === 0" class="empty-state">
+            <span class="material-symbols-outlined">history_toggle_off</span>
+            <p>No activity yet.</p>
+          </div>
+
+          <div v-else class="activity-feed">
+            <div v-for="log in activityLogs" :key="log._id" class="activity-item">
+              <span :class="['activity-dot', `ev-${log.event}`]"></span>
+              <div class="activity-content">
+                <span class="activity-desc">{{ log.description }}</span>
+                <span class="activity-time">{{ fmtDateTime(log.timestamp) }}</span>
               </div>
             </div>
-            <div class="fu-subject">{{ fu.subject }}</div>
-            <pre class="fu-body">{{ fu.body }}</pre>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- ═══════════════════════════ ACTIVITY ══════════════════════════════ -->
-      <section v-show="activeTab === 'activity'" class="tab-content">
-        <div class="section-header">
-          <h2>Activity Log</h2>
-        </div>
+      </main>
 
-        <div v-if="activityLogs.length === 0" class="empty">
-          <span class="material-symbols-outlined">history_toggle_off</span>
-          <p>No activity yet.</p>
-        </div>
-
-        <div v-else class="activity-list">
-          <div v-for="log in activityLogs" :key="log._id" class="activity-row">
-            <span :class="['activity-dot', `ev-${log.event}`]"></span>
-            <div class="activity-text">
-              <span>{{ log.description }}</span>
-              <span class="activity-time">{{ fmtDateTime(log.timestamp) }}</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ═══════════════════════════ MODAL ═════════════════════════════════ -->
+      <!-- ── MODAL ── -->
       <div v-if="showModal" class="overlay" @click.self="closeModal">
         <div class="modal">
           <div class="modal-header">
-            <h3>{{ editing ? 'Edit Application' : 'Add Application' }}</h3>
-            <button class="icon-btn" @click="closeModal">
+            <h2>{{ editing ? 'Edit Application' : 'New Application' }}</h2>
+            <button class="row-btn" @click="closeModal">
               <span class="material-symbols-outlined">close</span>
             </button>
           </div>
-          <form @submit.prevent="saveApp" class="modal-body">
-            <div class="form-row">
-              <div class="form-group">
+          <form @submit.prevent="saveApp" class="modal-form">
+            <div class="field-row">
+              <div class="field">
                 <label>Company *</label>
                 <input v-model="form.company" :class="{ invalid: errors.company }" placeholder="Google" />
                 <span class="err" v-if="errors.company">{{ errors.company }}</span>
               </div>
-              <div class="form-group">
+              <div class="field">
                 <label>Position *</label>
                 <input v-model="form.position" :class="{ invalid: errors.position }" placeholder="Software Engineer" />
                 <span class="err" v-if="errors.position">{{ errors.position }}</span>
               </div>
             </div>
-            <div class="form-row">
-              <div class="form-group">
+            <div class="field-row">
+              <div class="field">
                 <label>Status</label>
                 <select v-model="form.status">
                   <option v-for="s in statusList" :key="s.value" :value="s.value">{{ s.label }}</option>
                 </select>
               </div>
-              <div class="form-group">
+              <div class="field">
                 <label>Applied Date *</label>
                 <input type="date" v-model="form.appliedDate" :class="{ invalid: errors.appliedDate }" />
                 <span class="err" v-if="errors.appliedDate">{{ errors.appliedDate }}</span>
               </div>
             </div>
-            <div class="form-group">
+            <div class="field">
               <label>Job URL</label>
               <input type="url" v-model="form.jobUrl" placeholder="https://..." />
             </div>
-            <div class="form-row">
-              <div class="form-group">
+            <div class="field-row">
+              <div class="field">
                 <label>Contact Name</label>
                 <input v-model="form.contactName" placeholder="Recruiter name" />
               </div>
-              <div class="form-group">
+              <div class="field">
                 <label>Contact Email</label>
-                <input type="email" v-model="form.contactEmail" placeholder="recruiter@company.com" />
+                <input type="email" v-model="form.contactEmail" placeholder="recruiter@co.com" />
               </div>
             </div>
-            <div class="form-group">
+            <div class="field">
               <label>Notes</label>
-              <textarea v-model="form.notes" rows="3" placeholder="Referral, interview notes..."></textarea>
+              <textarea v-model="form.notes" rows="3" placeholder="Referral, interview notes…"></textarea>
             </div>
             <div class="modal-footer">
               <button type="button" class="btn-ghost" @click="closeModal">Cancel</button>
-              <button type="submit" class="btn-primary" :disabled="saving">
-                {{ saving ? 'Saving...' : 'Save' }}
-              </button>
+              <button type="submit" class="btn-primary" :disabled="saving">{{ saving ? 'Saving…' : 'Save' }}</button>
             </div>
           </form>
         </div>
