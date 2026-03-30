@@ -12,23 +12,21 @@
 
       <!-- HEADER -->
       <header>
-        <div class="header-inner">
-          <div class="header-brand">
-            <span class="material-symbols-outlined brand-icon">work</span>
-            <div>
-              <h1>Pipeline</h1>
-              <p class="subtitle">Job Application Tracker</p>
-            </div>
+        <div class="header-brand">
+          <span class="material-symbols-outlined brand-icon">work</span>
+          <div>
+            <h1>Pipeline</h1>
+            <p class="subtitle">Job Application Tracker</p>
           </div>
-          <div class="header-right">
-            <div class="stat-pills">
-              <span class="stat-pill">{{ applications.length }} total</span>
-              <span class="stat-pill highlight">{{ activeCount }} active</span>
-            </div>
-            <div :class="['gmail-status', gmailConnected ? 'connected' : '']">
-              <span class="material-symbols-outlined">mail</span>
-              {{ gmailConnected ? 'Gmail connected' : 'Gmail disconnected' }}
-            </div>
+        </div>
+        <div class="header-right">
+          <div class="stat-pills">
+            <span class="stat-pill">{{ applications.length }} total</span>
+            <span class="stat-pill highlight">{{ activeCount }} active</span>
+          </div>
+          <div :class="['gmail-status', gmailConnected ? 'connected' : '']">
+            <span class="material-symbols-outlined">mail</span>
+            {{ gmailConnected ? 'Gmail connected' : 'Gmail disconnected' }}
           </div>
         </div>
       </header>
@@ -125,7 +123,7 @@
       <!-- ═══════════════════════════ FOLLOW-UPS ════════════════════════════ -->
       <section v-show="activeTab === 'followups'" class="tab-content">
         <div class="section-header">
-          <h2><span class="material-symbols-outlined">mail</span> Follow-ups</h2>
+          <h2>Follow-ups</h2>
           <span class="count-badge">{{ pendingCount }} pending</span>
         </div>
 
@@ -164,7 +162,7 @@
       <!-- ═══════════════════════════ ACTIVITY ══════════════════════════════ -->
       <section v-show="activeTab === 'activity'" class="tab-content">
         <div class="section-header">
-          <h2><span class="material-symbols-outlined">history</span> Activity Log</h2>
+          <h2>Activity Log</h2>
         </div>
 
         <div v-if="activityLogs.length === 0" class="empty">
