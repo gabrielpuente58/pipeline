@@ -4,49 +4,56 @@ createApp({
   data() {
     return {
       apiUrl: "http://localhost:8080",
-      activeTab: "profile",
+      activeTab: "dashboard",
 
       tabs: [
-        { id: "profile", label: "Profile", icon: "person" },
-        { id: "checklist", label: "Checklist", icon: "checklist" },
-        { id: "mealplan", label: "Meal Plan", icon: "restaurant" },
-        { id: "timeline", label: "Timeline", icon: "schedule" },
+        { id: "dashboard",    label: "Dashboard",    icon: "dashboard" },
+        { id: "applications", label: "Applications", icon: "work" },
+        { id: "contacts",     label: "Contacts",     icon: "contacts" },
+        { id: "followups",    label: "Follow-ups",   icon: "mail" },
       ],
 
-      checklistCategories: [
-        { id: "swim", label: "Swim", icon: "pool" },
-        { id: "bike", label: "Bike", icon: "directions_bike" },
-        { id: "run", label: "Run", icon: "directions_run" },
-        { id: "t1", label: "T1 — Swim to Bike", icon: "transfer_within_a_station" },
-        { id: "t2", label: "T2 — Bike to Run", icon: "transfer_within_a_station" },
-        { id: "nutrition", label: "Nutrition", icon: "restaurant" },
+      statusFilters: [
+        { value: "all",          label: "All" },
+        { value: "applied",      label: "Applied" },
+        { value: "interviewing", label: "Interviewing" },
+        { value: "offer",        label: "Offer" },
+        { value: "rejected",     label: "Rejected" },
+        { value: "ghosted",      label: "Ghosted" },
       ],
 
-      // Athlete
-      athlete: null,
-      profileLoading: false,
-      profileForm: {
-        name: "",
-        gender: "",
-        height: "",
-        weight: "",
-        raceDate: "",
-        raceLocation: "",
-        profilePicture: "",
-      },
-      profileErrors: {},
+      // Gmail
+      gmailConnected: false,
 
-      // Checklist
-      checklist: [],
-      checklistLoading: false,
+      // Applications
+      applications: [],
+      applicationsLoading: false,
+      appFilter: "all",
+      showAppModal: false,
+      editingApp: null,
+      appForm: { company: "", position: "", status: "applied", appliedDate: "", jobUrl: "", notes: "", contactName: "", contactEmail: "" },
+      appErrors: {},
+      appSaving: false,
 
-      // Meal Plan
-      mealPlan: null,
-      generatingPlan: false,
+      // Scanning
+      scanning: false,
 
-      // Reminders
-      reminders: [],
-      remindersLoading: false,
+      // Contacts
+      contacts: [],
+      contactsLoading: false,
+      showContactModal: false,
+      editingContact: null,
+      contactForm: { name: "", email: "", company: "", role: "", linkedinUrl: "", notes: "" },
+      contactErrors: {},
+      contactSaving: false,
+
+      // Follow-ups
+      followUps: [],
+      followUpsLoading: false,
+
+      // Activity
+      activityLogs: [],
+      activityLoading: false,
 
       // Global message
       globalMessage: "",
@@ -56,260 +63,347 @@ createApp({
   },
 
   computed: {
-    daysUntilRace() {
-      if (!this.athlete || !this.athlete.raceDate) return null;
-      const diff = new Date(this.athlete.raceDate) - new Date();
-      return Math.ceil(diff / (1000 * 60 * 60 * 24));
+    filteredApplications() {
+      if (this.appFilter === "all") return this.applications;
+      return this.applications.filter((a) => a.status === this.appFilter);
     },
 
-    urgencyClass() {
-      const d = this.daysUntilRace;
-      if (d === null) return "";
-      if (d <= 7) return "urgent";
-      if (d <= 30) return "soon";
-      return "plenty";
+    activeCount() {
+      return this.applications.filter((a) => ["applied", "interviewing"].includes(a.status)).length;
     },
 
-    checkedCount() {
-      return this.checklist.filter((i) => i.checked).length;
-    },
-
-    purchasedCount() {
-      return this.checklist.filter((i) => i.purchased).length;
-    },
-
-    sortedReminders() {
-      return [...this.reminders].sort((a, b) => b.daysBeforeRace - a.daysBeforeRace);
+    pendingFollowUps() {
+      return this.followUps.filter((f) => !f.sent).length;
     },
   },
 
   mounted() {
-    this.fetchAthlete();
-    this.fetchChecklist();
-    this.fetchMealPlan();
-    this.fetchReminders();
+    this.fetchGmailStatus();
+    this.fetchApplications();
+    this.fetchContacts();
+    this.fetchFollowUps();
+    this.fetchActivityLogs();
   },
 
   methods: {
-    // ── PROFILE ──────────────────────────────────────────────────────────────
 
-    async fetchAthlete() {
+    // ── GMAIL ─────────────────────────────────────────────────────────────────
+
+    async fetchGmailStatus() {
       try {
-        const res = await fetch(`${this.apiUrl}/athlete`);
-        if (res.status === 404) return;
-        if (!res.ok) throw new Error("Failed to load profile");
-        this.athlete = await res.json();
-        this.fillProfileForm(this.athlete);
+        const res = await fetch(`${this.apiUrl}/auth/gmail/status`);
+        const data = await res.json();
+        this.gmailConnected = data.connected;
+      } catch {
+        this.gmailConnected = false;
+      }
+    },
+
+    connectGmail() {
+      window.open(`${this.apiUrl}/auth/gmail`, "_blank", "width=500,height=600");
+      setTimeout(() => this.fetchGmailStatus(), 5000);
+    },
+
+    // ── APPLICATIONS ──────────────────────────────────────────────────────────
+
+    async fetchApplications() {
+      this.applicationsLoading = true;
+      try {
+        const res = await fetch(`${this.apiUrl}/applications`);
+        if (!res.ok) throw new Error("Failed to load applications");
+        this.applications = await res.json();
       } catch (err) {
-        console.error(err);
+        this.showMessage(err.message, "error");
+      } finally {
+        this.applicationsLoading = false;
       }
     },
 
-    fillProfileForm(athlete) {
-      this.profileForm.name = athlete.name;
-      this.profileForm.gender = athlete.gender;
-      this.profileForm.height = athlete.height;
-      this.profileForm.weight = athlete.weight;
-      this.profileForm.raceDate = athlete.raceDate
-        ? new Date(athlete.raceDate).toISOString().split("T")[0]
-        : "";
-      this.profileForm.raceLocation = athlete.raceLocation;
-      this.profileForm.profilePicture = athlete.profilePicture || "";
+    countByStatus(status) {
+      return this.applications.filter((a) => a.status === status).length;
     },
 
-    validateProfile() {
-      const errors = {};
-      if (!this.profileForm.name.trim()) errors.name = "Name is required";
-      if (!this.profileForm.gender) errors.gender = "Gender is required";
-
-      const h = Number(this.profileForm.height);
-      if (!this.profileForm.height) errors.height = "Height is required";
-      else if (h < 36 || h > 108) errors.height = "Height must be between 36 and 108 inches";
-
-      const w = Number(this.profileForm.weight);
-      if (!this.profileForm.weight) errors.weight = "Weight is required";
-      else if (w < 50 || w > 500) errors.weight = "Weight must be between 50 and 500 lbs";
-
-      if (!this.profileForm.raceDate) {
-        errors.raceDate = "Race date is required";
-      } else if (new Date(this.profileForm.raceDate) <= new Date()) {
-        errors.raceDate = "Race date must be in the future";
+    openAppModal(app) {
+      this.editingApp = app;
+      if (app) {
+        this.appForm = {
+          company: app.company,
+          position: app.position,
+          status: app.status,
+          appliedDate: app.appliedDate ? new Date(app.appliedDate).toISOString().split("T")[0] : "",
+          jobUrl: app.jobUrl || "",
+          notes: app.notes || "",
+          contactName: app.contactName || "",
+          contactEmail: app.contactEmail || "",
+        };
+      } else {
+        this.appForm = { company: "", position: "", status: "applied", appliedDate: "", jobUrl: "", notes: "", contactName: "", contactEmail: "" };
       }
-
-      if (!this.profileForm.raceLocation.trim()) errors.raceLocation = "Race location is required";
-
-      this.profileErrors = errors;
-      return Object.keys(errors).length === 0;
+      this.appErrors = {};
+      this.showAppModal = true;
     },
 
-    async saveProfile() {
-      if (!this.validateProfile()) return;
-      this.profileLoading = true;
+    closeAppModal() {
+      this.showAppModal = false;
+      this.editingApp = null;
+      this.appErrors = {};
+    },
 
+    validateApp() {
+      const e = {};
+      if (!this.appForm.company.trim())   e.company   = "Company is required";
+      if (!this.appForm.position.trim())  e.position  = "Position is required";
+      if (!this.appForm.appliedDate)      e.appliedDate = "Applied date is required";
+      this.appErrors = e;
+      return Object.keys(e).length === 0;
+    },
+
+    async saveApp() {
+      if (!this.validateApp()) return;
+      this.appSaving = true;
       try {
         let res;
-        if (this.athlete) {
-          res = await fetch(`${this.apiUrl}/athlete/${this.athlete._id}`, {
+        if (this.editingApp) {
+          res = await fetch(`${this.apiUrl}/applications/${this.editingApp._id}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(this.profileForm),
+            body: JSON.stringify(this.appForm),
           });
         } else {
-          res = await fetch(`${this.apiUrl}/athlete`, {
+          res = await fetch(`${this.apiUrl}/applications`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(this.profileForm),
+            body: JSON.stringify(this.appForm),
           });
         }
-
         if (!res.ok) {
           const data = await res.json();
-          throw new Error(data.error || "Failed to save profile");
+          throw new Error(data.error || "Failed to save");
         }
-
-        this.athlete = await res.json();
-        this.showMessage("Profile saved successfully!", "success");
+        this.closeAppModal();
+        await Promise.all([this.fetchApplications(), this.fetchActivityLogs()]);
+        this.showMessage(this.editingApp ? "Application updated" : "Application added", "success");
       } catch (err) {
         this.showMessage(err.message, "error");
       } finally {
-        this.profileLoading = false;
+        this.appSaving = false;
       }
     },
 
-    // ── CHECKLIST ─────────────────────────────────────────────────────────────
-
-    async fetchChecklist() {
-      this.checklistLoading = true;
+    async deleteApp(id) {
+      if (!confirm("Delete this application? This cannot be undone.")) return;
       try {
-        const res = await fetch(`${this.apiUrl}/checklist`);
-        if (!res.ok) throw new Error("Failed to load checklist");
-        this.checklist = await res.json();
-      } catch (err) {
-        console.error(err);
-      } finally {
-        this.checklistLoading = false;
-      }
-    },
-
-    getCategoryItems(categoryId) {
-      return this.checklist.filter((i) => i.category === categoryId);
-    },
-
-    getCategoryCheckedCount(categoryId) {
-      return this.getCategoryItems(categoryId).filter((i) => i.checked).length;
-    },
-
-    async toggleChecked(item) {
-      try {
-        const res = await fetch(`${this.apiUrl}/checklist/${item._id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ checked: !item.checked }),
-        });
-        if (!res.ok) throw new Error("Failed to update item");
-        const updated = await res.json();
-        const idx = this.checklist.findIndex((i) => i._id === item._id);
-        if (idx !== -1) this.checklist[idx] = updated;
+        const res = await fetch(`${this.apiUrl}/applications/${id}`, { method: "DELETE" });
+        if (!res.ok) throw new Error("Failed to delete");
+        this.applications = this.applications.filter((a) => a._id !== id);
+        await Promise.all([this.fetchFollowUps(), this.fetchActivityLogs()]);
+        this.showMessage("Application deleted", "success");
       } catch (err) {
         this.showMessage(err.message, "error");
       }
     },
 
-    async togglePurchased(item) {
+    // ── SCAN INBOX ────────────────────────────────────────────────────────────
+
+    async scanInbox() {
+      this.scanning = true;
       try {
-        const res = await fetch(`${this.apiUrl}/checklist/${item._id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ purchased: !item.purchased }),
-        });
-        if (!res.ok) throw new Error("Failed to update item");
-        const updated = await res.json();
-        const idx = this.checklist.findIndex((i) => i._id === item._id);
-        if (idx !== -1) this.checklist[idx] = updated;
-      } catch (err) {
-        this.showMessage(err.message, "error");
-      }
-    },
-
-    async deleteChecklistItem(id) {
-      try {
-        const res = await fetch(`${this.apiUrl}/checklist/${id}`, { method: "DELETE" });
-        if (!res.ok) throw new Error("Failed to delete item");
-        this.checklist = this.checklist.filter((i) => i._id !== id);
-      } catch (err) {
-        this.showMessage(err.message, "error");
-      }
-    },
-
-    // ── MEAL PLAN ────────────────────────────────────────────────────────────
-
-    async fetchMealPlan() {
-      try {
-        const res = await fetch(`${this.apiUrl}/meal-plan`);
-        if (res.status === 404) return;
-        if (!res.ok) throw new Error("Failed to load meal plan");
-        this.mealPlan = await res.json();
-      } catch (err) {
-        console.error(err);
-      }
-    },
-
-    async generatePlan() {
-      if (!this.athlete) return;
-      this.generatingPlan = true;
-
-      try {
-        const res = await fetch(`${this.apiUrl}/generate-plan`, { method: "POST" });
-        if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error || "Failed to generate plan");
-        }
+        const res = await fetch(`${this.apiUrl}/scan-inbox`, { method: "POST" });
         const data = await res.json();
-        this.mealPlan = data.mealPlan;
-        this.reminders = data.reminders;
-        this.showMessage("Plan generated successfully!", "success");
+        if (!res.ok) throw new Error(data.error || "Scan failed");
+        await Promise.all([
+          this.fetchApplications(),
+          this.fetchFollowUps(),
+          this.fetchActivityLogs(),
+        ]);
+        this.showMessage(
+          `Scan complete — ${data.threadsFound} threads found, ${data.classified} classified, ${data.followUpsDrafted} follow-ups drafted`,
+          "success"
+        );
       } catch (err) {
         this.showMessage(err.message, "error");
       } finally {
-        this.generatingPlan = false;
+        this.scanning = false;
       }
     },
 
-    // ── REMINDERS ────────────────────────────────────────────────────────────
+    // ── CONTACTS ──────────────────────────────────────────────────────────────
 
-    async fetchReminders() {
-      this.remindersLoading = true;
+    async fetchContacts() {
+      this.contactsLoading = true;
       try {
-        const res = await fetch(`${this.apiUrl}/reminders`);
-        if (!res.ok) throw new Error("Failed to load reminders");
-        this.reminders = await res.json();
+        const res = await fetch(`${this.apiUrl}/contacts`);
+        if (!res.ok) throw new Error("Failed to load contacts");
+        this.contacts = await res.json();
+      } catch (err) {
+        this.showMessage(err.message, "error");
+      } finally {
+        this.contactsLoading = false;
+      }
+    },
+
+    openContactModal(contact) {
+      this.editingContact = contact;
+      if (contact) {
+        this.contactForm = {
+          name: contact.name,
+          email: contact.email,
+          company: contact.company,
+          role: contact.role || "",
+          linkedinUrl: contact.linkedinUrl || "",
+          notes: contact.notes || "",
+        };
+      } else {
+        this.contactForm = { name: "", email: "", company: "", role: "", linkedinUrl: "", notes: "" };
+      }
+      this.contactErrors = {};
+      this.showContactModal = true;
+    },
+
+    closeContactModal() {
+      this.showContactModal = false;
+      this.editingContact = null;
+      this.contactErrors = {};
+    },
+
+    validateContact() {
+      const e = {};
+      if (!this.contactForm.name.trim())    e.name    = "Name is required";
+      if (!this.contactForm.email.trim())   e.email   = "Email is required";
+      if (!this.contactForm.company.trim()) e.company = "Company is required";
+      this.contactErrors = e;
+      return Object.keys(e).length === 0;
+    },
+
+    async saveContact() {
+      if (!this.validateContact()) return;
+      this.contactSaving = true;
+      try {
+        let res;
+        if (this.editingContact) {
+          res = await fetch(`${this.apiUrl}/contacts/${this.editingContact._id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(this.contactForm),
+          });
+        } else {
+          res = await fetch(`${this.apiUrl}/contacts`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(this.contactForm),
+          });
+        }
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || "Failed to save contact");
+        }
+        this.closeContactModal();
+        await this.fetchContacts();
+        this.showMessage(this.editingContact ? "Contact updated" : "Contact added", "success");
+      } catch (err) {
+        this.showMessage(err.message, "error");
+      } finally {
+        this.contactSaving = false;
+      }
+    },
+
+    async deleteContact(id) {
+      if (!confirm("Delete this contact?")) return;
+      try {
+        const res = await fetch(`${this.apiUrl}/contacts/${id}`, { method: "DELETE" });
+        if (!res.ok) throw new Error("Failed to delete contact");
+        this.contacts = this.contacts.filter((c) => c._id !== id);
+        this.showMessage("Contact deleted", "success");
+      } catch (err) {
+        this.showMessage(err.message, "error");
+      }
+    },
+
+    // ── FOLLOW-UPS ────────────────────────────────────────────────────────────
+
+    async fetchFollowUps() {
+      this.followUpsLoading = true;
+      try {
+        const res = await fetch(`${this.apiUrl}/follow-ups`);
+        if (!res.ok) throw new Error("Failed to load follow-ups");
+        this.followUps = await res.json();
+      } catch (err) {
+        this.showMessage(err.message, "error");
+      } finally {
+        this.followUpsLoading = false;
+      }
+    },
+
+    async markSent(fu) {
+      try {
+        const res = await fetch(`${this.apiUrl}/follow-ups/${fu._id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sent: true }),
+        });
+        if (!res.ok) throw new Error("Failed to update follow-up");
+        const updated = await res.json();
+        const idx = this.followUps.findIndex((f) => f._id === fu._id);
+        if (idx !== -1) this.followUps[idx] = updated;
+        await this.fetchActivityLogs();
+        this.showMessage("Marked as sent", "success");
+      } catch (err) {
+        this.showMessage(err.message, "error");
+      }
+    },
+
+    async deleteFollowUp(id) {
+      try {
+        const res = await fetch(`${this.apiUrl}/follow-ups/${id}`, { method: "DELETE" });
+        if (!res.ok) throw new Error("Failed to delete follow-up");
+        this.followUps = this.followUps.filter((f) => f._id !== id);
+        this.showMessage("Follow-up deleted", "success");
+      } catch (err) {
+        this.showMessage(err.message, "error");
+      }
+    },
+
+    // ── ACTIVITY LOGS ─────────────────────────────────────────────────────────
+
+    async fetchActivityLogs() {
+      this.activityLoading = true;
+      try {
+        const res = await fetch(`${this.apiUrl}/activity-logs`);
+        if (!res.ok) throw new Error("Failed to load activity");
+        this.activityLogs = await res.json();
       } catch (err) {
         console.error(err);
       } finally {
-        this.remindersLoading = false;
+        this.activityLoading = false;
       }
     },
 
-    getCategoryIcon(category) {
+    eventIcon(event) {
       const icons = {
-        purchase: "shopping_cart",
-        maintenance: "build",
-        training: "fitness_center",
-        nutrition: "restaurant",
-        logistics: "checklist",
+        "status-change":   "swap_horiz",
+        "email-received":  "mail",
+        "follow-up-sent":  "send",
+        "ai-scan":         "auto_awesome",
+        "created":         "add_circle",
+        "updated":         "edit",
       };
-      return icons[category] || "notifications";
+      return icons[event] || "circle";
     },
 
-    // ── UTILITIES ────────────────────────────────────────────────────────────
+    // ── UTILITIES ─────────────────────────────────────────────────────────────
 
     formatDate(dateStr) {
       if (!dateStr) return "";
       return new Date(dateStr).toLocaleDateString("en-US", {
-        weekday: "long",
-        year: "numeric",
-        month: "long",
-        day: "numeric",
+        month: "short", day: "numeric", year: "numeric",
+        hour: "2-digit", minute: "2-digit",
+      });
+    },
+
+    formatShortDate(dateStr) {
+      if (!dateStr) return "";
+      return new Date(dateStr).toLocaleDateString("en-US", {
+        month: "short", day: "numeric", year: "numeric",
       });
     },
 
@@ -317,9 +411,7 @@ createApp({
       this.globalMessage = msg;
       this.globalMessageType = type;
       if (this.globalMessageTimer) clearTimeout(this.globalMessageTimer);
-      this.globalMessageTimer = setTimeout(() => {
-        this.globalMessage = "";
-      }, 4000);
+      this.globalMessageTimer = setTimeout(() => { this.globalMessage = ""; }, 5000);
     },
   },
 }).mount("#app");

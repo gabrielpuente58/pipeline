@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Race Day Planner | Ironman 70.3</title>
+    <title>Pipeline — Job Tracker</title>
     <link rel="stylesheet" href="styles.css" />
     <link
       rel="stylesheet"
@@ -12,30 +12,37 @@
   </head>
   <body>
     <div id="app">
-      <!-- Header -->
+
+      <!-- ── HEADER ── -->
       <header>
         <div class="header-inner">
           <div class="header-brand">
-            <span class="material-symbols-outlined brand-icon">directions_run</span>
+            <span class="material-symbols-outlined brand-icon">work</span>
             <div>
-              <h1>Race Day Planner</h1>
-              <p class="subtitle">Ironman 70.3 Preparation</p>
+              <h1>Pipeline</h1>
+              <p class="subtitle">Job Application Tracker</p>
             </div>
           </div>
-          <div class="header-race-info" v-if="athlete">
-            <div class="countdown" v-if="daysUntilRace !== null">
-              <span class="countdown-number" :class="urgencyClass">{{ daysUntilRace }}</span>
-              <span class="countdown-label">days to race</span>
+          <div class="header-right">
+            <div class="stat-pills">
+              <span class="stat-pill">
+                <span class="material-symbols-outlined">work</span>
+                {{ applications.length }} total
+              </span>
+              <span class="stat-pill active">
+                <span class="material-symbols-outlined">trending_up</span>
+                {{ activeCount }} active
+              </span>
             </div>
-            <div class="race-location" v-if="athlete.raceLocation">
-              <span class="material-symbols-outlined">location_on</span>
-              {{ athlete.raceLocation }}
+            <div :class="['gmail-badge', gmailConnected ? 'connected' : 'disconnected']">
+              <span class="material-symbols-outlined">mail</span>
+              {{ gmailConnected ? 'Gmail connected' : 'Gmail not connected' }}
             </div>
           </div>
         </div>
       </header>
 
-      <!-- Tab Navigation -->
+      <!-- ── TABS ── -->
       <nav class="tabs">
         <button
           v-for="tab in tabs"
@@ -48,318 +55,393 @@
         </button>
       </nav>
 
-      <!-- Global message -->
+      <!-- ── GLOBAL MESSAGE ── -->
       <div v-if="globalMessage" :class="['global-message', globalMessageType]">
         <span class="material-symbols-outlined">{{ globalMessageType === 'success' ? 'check_circle' : 'error' }}</span>
         {{ globalMessage }}
       </div>
 
-      <!-- ── PROFILE TAB ── -->
-      <section v-show="activeTab === 'profile'" class="tab-content">
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <!-- DASHBOARD TAB                                                  -->
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <section v-show="activeTab === 'dashboard'" class="tab-content">
         <div class="section-header">
-          <h2><span class="material-symbols-outlined">person</span> Athlete Profile</h2>
+          <h2><span class="material-symbols-outlined">dashboard</span> Dashboard</h2>
         </div>
 
-        <div class="profile-layout">
-          <!-- Profile picture display -->
-          <div class="profile-pic-area">
-            <div class="profile-pic-circle">
-              <img v-if="athlete && athlete.profilePicture" :src="athlete.profilePicture" alt="Profile" />
-              <span v-else class="material-symbols-outlined profile-placeholder">person</span>
+        <!-- Stat cards -->
+        <div class="stat-grid">
+          <div class="stat-card">
+            <div class="stat-number">{{ applications.length }}</div>
+            <div class="stat-label">Total Applications</div>
+          </div>
+          <div class="stat-card status-applied">
+            <div class="stat-number">{{ countByStatus('applied') }}</div>
+            <div class="stat-label">Applied</div>
+          </div>
+          <div class="stat-card status-interviewing">
+            <div class="stat-number">{{ countByStatus('interviewing') }}</div>
+            <div class="stat-label">Interviewing</div>
+          </div>
+          <div class="stat-card status-offer">
+            <div class="stat-number">{{ countByStatus('offer') }}</div>
+            <div class="stat-label">Offers</div>
+          </div>
+          <div class="stat-card status-rejected">
+            <div class="stat-number">{{ countByStatus('rejected') }}</div>
+            <div class="stat-label">Rejected</div>
+          </div>
+          <div class="stat-card status-ghosted">
+            <div class="stat-number">{{ countByStatus('ghosted') }}</div>
+            <div class="stat-label">Ghosted</div>
+          </div>
+        </div>
+
+        <!-- Activity feed -->
+        <div class="section-header" style="margin-top:32px;">
+          <h2><span class="material-symbols-outlined">history</span> Recent Activity</h2>
+        </div>
+
+        <div v-if="activityLoading" class="loading-state">
+          <span class="material-symbols-outlined spin">progress_activity</span> Loading activity...
+        </div>
+
+        <div v-else-if="activityLogs.length === 0" class="empty-state">
+          <span class="material-symbols-outlined">history_toggle_off</span>
+          <p>No activity yet. Add an application to get started.</p>
+        </div>
+
+        <div v-else class="activity-feed">
+          <div v-for="log in activityLogs" :key="log._id" class="activity-item">
+            <span :class="['activity-icon', `event-${log.event}`]">
+              <span class="material-symbols-outlined">{{ eventIcon(log.event) }}</span>
+            </span>
+            <div class="activity-body">
+              <p class="activity-desc">{{ log.description }}</p>
+              <span class="activity-time">{{ formatDate(log.timestamp) }}</span>
             </div>
           </div>
-
-          <!-- Profile form -->
-          <form @submit.prevent="saveProfile" class="profile-form">
-            <div class="form-row">
-              <div class="form-group">
-                <label>Full Name *</label>
-                <input
-                  type="text"
-                  v-model="profileForm.name"
-                  placeholder="e.g. Gabriel Puente"
-                  :class="{ invalid: profileErrors.name }"
-                  :disabled="profileLoading"
-                />
-                <span class="field-error" v-if="profileErrors.name">{{ profileErrors.name }}</span>
-              </div>
-              <div class="form-group">
-                <label>Gender *</label>
-                <select
-                  v-model="profileForm.gender"
-                  :class="{ invalid: profileErrors.gender }"
-                  :disabled="profileLoading"
-                >
-                  <option value="">Select gender</option>
-                  <option value="male">Male</option>
-                  <option value="female">Female</option>
-                  <option value="prefer-not-to-say">Prefer not to say</option>
-                </select>
-                <span class="field-error" v-if="profileErrors.gender">{{ profileErrors.gender }}</span>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group">
-                <label>Height (inches) *</label>
-                <input
-                  type="number"
-                  v-model.number="profileForm.height"
-                  placeholder="e.g. 70"
-                  min="36"
-                  max="108"
-                  :class="{ invalid: profileErrors.height }"
-                  :disabled="profileLoading"
-                />
-                <span class="field-error" v-if="profileErrors.height">{{ profileErrors.height }}</span>
-              </div>
-              <div class="form-group">
-                <label>Weight (lbs) *</label>
-                <input
-                  type="number"
-                  v-model.number="profileForm.weight"
-                  placeholder="e.g. 165"
-                  min="50"
-                  max="500"
-                  :class="{ invalid: profileErrors.weight }"
-                  :disabled="profileLoading"
-                />
-                <span class="field-error" v-if="profileErrors.weight">{{ profileErrors.weight }}</span>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group">
-                <label>Race Date *</label>
-                <input
-                  type="date"
-                  v-model="profileForm.raceDate"
-                  :class="{ invalid: profileErrors.raceDate }"
-                  :disabled="profileLoading"
-                />
-                <span class="field-error" v-if="profileErrors.raceDate">{{ profileErrors.raceDate }}</span>
-              </div>
-              <div class="form-group">
-                <label>Race Location *</label>
-                <input
-                  type="text"
-                  v-model="profileForm.raceLocation"
-                  placeholder="e.g. Chattanooga, TN"
-                  :class="{ invalid: profileErrors.raceLocation }"
-                  :disabled="profileLoading"
-                />
-                <span class="field-error" v-if="profileErrors.raceLocation">{{ profileErrors.raceLocation }}</span>
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label>Profile Picture URL</label>
-              <input
-                type="url"
-                v-model="profileForm.profilePicture"
-                placeholder="https://..."
-                :disabled="profileLoading"
-              />
-            </div>
-
-            <button type="submit" class="btn-primary" :disabled="profileLoading">
-              <span class="material-symbols-outlined">{{ profileLoading ? 'progress_activity' : 'save' }}</span>
-              {{ athlete ? 'Update Profile' : 'Create Profile' }}
-            </button>
-          </form>
         </div>
       </section>
 
-      <!-- ── CHECKLIST TAB ── -->
-      <section v-show="activeTab === 'checklist'" class="tab-content">
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <!-- APPLICATIONS TAB                                               -->
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <section v-show="activeTab === 'applications'" class="tab-content">
         <div class="section-header">
-          <h2><span class="material-symbols-outlined">checklist</span> Gear Checklist</h2>
-          <div class="checklist-summary">
-            <span class="badge">{{ checkedCount }} / {{ checklist.length }} packed</span>
-            <span class="badge badge-alt">{{ purchasedCount }} / {{ checklist.length }} purchased</span>
+          <h2><span class="material-symbols-outlined">work</span> Applications</h2>
+          <div class="header-actions">
+            <button class="btn-secondary" @click="scanInbox" :disabled="scanning">
+              <span class="material-symbols-outlined">{{ scanning ? 'progress_activity' : 'inbox' }}</span>
+              {{ scanning ? 'Scanning...' : 'Scan Inbox' }}
+            </button>
+            <button class="btn-primary" @click="openAppModal(null)">
+              <span class="material-symbols-outlined">add</span> Add Application
+            </button>
           </div>
         </div>
 
-        <div v-if="checklistLoading" class="loading-state">
-          <span class="material-symbols-outlined spin">progress_activity</span> Loading checklist...
+        <!-- Status filter -->
+        <div class="filter-bar">
+          <button
+            v-for="f in statusFilters"
+            :key="f.value"
+            :class="['filter-btn', { active: appFilter === f.value }]"
+            @click="appFilter = f.value"
+          >
+            {{ f.label }}
+            <span class="filter-count">{{ f.value === 'all' ? applications.length : countByStatus(f.value) }}</span>
+          </button>
         </div>
 
-        <div v-else>
-          <div
-            v-for="cat in checklistCategories"
-            :key="cat.id"
-            class="checklist-category"
-          >
-            <div class="category-header">
-              <span class="material-symbols-outlined category-icon">{{ cat.icon }}</span>
-              <h3>{{ cat.label }}</h3>
-              <span class="category-count">
-                {{ getCategoryCheckedCount(cat.id) }}/{{ getCategoryItems(cat.id).length }}
-              </span>
+        <div v-if="applicationsLoading" class="loading-state">
+          <span class="material-symbols-outlined spin">progress_activity</span> Loading applications...
+        </div>
+
+        <div v-else-if="filteredApplications.length === 0" class="empty-state">
+          <span class="material-symbols-outlined">work_off</span>
+          <p>No applications{{ appFilter !== 'all' ? ' with this status' : '' }}. Click "Add Application" to start tracking.</p>
+        </div>
+
+        <div v-else class="app-list">
+          <div v-for="app in filteredApplications" :key="app._id" class="app-card">
+            <div class="app-card-main">
+              <div class="app-info">
+                <div class="app-company">{{ app.company }}</div>
+                <div class="app-position">{{ app.position }}</div>
+                <div class="app-meta">
+                  <span v-if="app.contactName" class="meta-item">
+                    <span class="material-symbols-outlined">person</span> {{ app.contactName }}
+                  </span>
+                  <span class="meta-item">
+                    <span class="material-symbols-outlined">calendar_today</span>
+                    {{ formatShortDate(app.appliedDate) }}
+                  </span>
+                  <a v-if="app.jobUrl" :href="app.jobUrl" target="_blank" class="meta-link">
+                    <span class="material-symbols-outlined">open_in_new</span> Job post
+                  </a>
+                </div>
+                <p v-if="app.notes" class="app-notes">{{ app.notes }}</p>
+              </div>
+              <div class="app-right">
+                <span :class="['status-badge', `status-${app.status}`]">{{ app.status }}</span>
+                <div class="app-actions">
+                  <button class="icon-btn" @click="openAppModal(app)" title="Edit">
+                    <span class="material-symbols-outlined">edit</span>
+                  </button>
+                  <button class="icon-btn danger" @click="deleteApp(app._id)" title="Delete">
+                    <span class="material-symbols-outlined">delete</span>
+                  </button>
+                </div>
+              </div>
             </div>
+          </div>
+        </div>
+      </section>
 
-            <div class="checklist-items">
-              <div
-                v-for="item in getCategoryItems(cat.id)"
-                :key="item._id"
-                :class="['checklist-item', { 'is-checked': item.checked }]"
-              >
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <!-- CONTACTS TAB                                                   -->
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <section v-show="activeTab === 'contacts'" class="tab-content">
+        <div class="section-header">
+          <h2><span class="material-symbols-outlined">contacts</span> Contacts</h2>
+          <button class="btn-primary" @click="openContactModal(null)">
+            <span class="material-symbols-outlined">add</span> Add Contact
+          </button>
+        </div>
+
+        <div v-if="contactsLoading" class="loading-state">
+          <span class="material-symbols-outlined spin">progress_activity</span> Loading contacts...
+        </div>
+
+        <div v-else-if="contacts.length === 0" class="empty-state">
+          <span class="material-symbols-outlined">person_off</span>
+          <p>No contacts yet. Add recruiters and hiring managers you've connected with.</p>
+        </div>
+
+        <div v-else class="contact-grid">
+          <div v-for="c in contacts" :key="c._id" class="contact-card">
+            <div class="contact-avatar">{{ c.name.charAt(0).toUpperCase() }}</div>
+            <div class="contact-info">
+              <div class="contact-name">{{ c.name }}</div>
+              <div class="contact-role">{{ c.role || 'Recruiter' }} · {{ c.company }}</div>
+              <a :href="`mailto:${c.email}`" class="contact-email">{{ c.email }}</a>
+              <a v-if="c.linkedinUrl" :href="c.linkedinUrl" target="_blank" class="meta-link" style="margin-top:4px;display:inline-flex;align-items:center;gap:4px;font-size:0.8rem;">
+                <span class="material-symbols-outlined" style="font-size:0.9rem;">open_in_new</span> LinkedIn
+              </a>
+              <p v-if="c.notes" class="contact-notes">{{ c.notes }}</p>
+            </div>
+            <div class="contact-actions">
+              <button class="icon-btn" @click="openContactModal(c)" title="Edit">
+                <span class="material-symbols-outlined">edit</span>
+              </button>
+              <button class="icon-btn danger" @click="deleteContact(c._id)" title="Delete">
+                <span class="material-symbols-outlined">delete</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <!-- FOLLOW-UPS TAB                                                 -->
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <section v-show="activeTab === 'followups'" class="tab-content">
+        <div class="section-header">
+          <h2><span class="material-symbols-outlined">mail</span> Follow-ups</h2>
+          <span class="badge">{{ pendingFollowUps }} pending</span>
+        </div>
+
+        <div v-if="followUpsLoading" class="loading-state">
+          <span class="material-symbols-outlined spin">progress_activity</span> Loading follow-ups...
+        </div>
+
+        <div v-else-if="followUps.length === 0" class="empty-state">
+          <span class="material-symbols-outlined">mark_email_unread</span>
+          <p>No follow-ups yet. Use "Scan Inbox" on the Applications tab to auto-generate drafts for silent applications.</p>
+        </div>
+
+        <div v-else class="followup-list">
+          <div
+            v-for="fu in followUps"
+            :key="fu._id"
+            :class="['followup-card', { sent: fu.sent }]"
+          >
+            <div class="followup-header">
+              <div class="followup-meta">
+                <span class="followup-company">
+                  {{ fu.applicationId?.company || '—' }} · {{ fu.applicationId?.position || '—' }}
+                </span>
+                <span v-if="fu.draftedByAI" class="ai-badge">
+                  <span class="material-symbols-outlined">auto_awesome</span> AI draft
+                </span>
+                <span v-if="fu.sent" class="sent-badge">
+                  <span class="material-symbols-outlined">check_circle</span> Sent
+                </span>
+              </div>
+              <div class="followup-actions">
                 <button
-                  class="check-btn"
-                  :class="{ checked: item.checked }"
-                  @click="toggleChecked(item)"
-                  :title="item.checked ? 'Mark unpacked' : 'Mark packed'"
+                  v-if="!fu.sent"
+                  class="btn-secondary small"
+                  @click="markSent(fu)"
+                  title="Mark as sent"
                 >
-                  <span class="material-symbols-outlined">
-                    {{ item.checked ? 'check_box' : 'check_box_outline_blank' }}
-                  </span>
+                  <span class="material-symbols-outlined">send</span> Mark Sent
                 </button>
-
-                <span class="item-name">{{ item.name }}</span>
-
-                <button
-                  class="purchase-btn"
-                  :class="{ purchased: item.purchased }"
-                  @click="togglePurchased(item)"
-                  :title="item.purchased ? 'Mark not purchased' : 'Mark purchased'"
-                >
-                  <span class="material-symbols-outlined">
-                    {{ item.purchased ? 'shopping_cart' : 'shopping_cart_off' }}
-                  </span>
-                  {{ item.purchased ? 'Bought' : 'Need to buy' }}
-                </button>
-
-                <button class="delete-btn" @click="deleteChecklistItem(item._id)" title="Remove item">
+                <button class="icon-btn danger" @click="deleteFollowUp(fu._id)" title="Delete">
                   <span class="material-symbols-outlined">delete</span>
                 </button>
               </div>
             </div>
+
+            <div class="followup-subject">{{ fu.subject }}</div>
+            <pre class="followup-body">{{ fu.body }}</pre>
           </div>
         </div>
       </section>
 
-      <!-- ── MEAL PLAN TAB ── -->
-      <section v-show="activeTab === 'mealplan'" class="tab-content">
-        <div class="section-header">
-          <h2><span class="material-symbols-outlined">restaurant</span> Carb Loading Meal Plan</h2>
-          <button
-            class="btn-primary"
-            @click="generatePlan"
-            :disabled="generatingPlan || !athlete"
-            :title="!athlete ? 'Create an athlete profile first' : ''"
-          >
-            <span class="material-symbols-outlined">{{ generatingPlan ? 'progress_activity' : 'auto_awesome' }}</span>
-            {{ generatingPlan ? 'Generating...' : 'Generate AI Plan' }}
-          </button>
-        </div>
-
-        <div v-if="!athlete" class="empty-state">
-          <span class="material-symbols-outlined">person_off</span>
-          <p>Create an athlete profile first to generate a personalized meal plan.</p>
-        </div>
-
-        <div v-else-if="generatingPlan" class="loading-state large">
-          <span class="material-symbols-outlined spin">progress_activity</span>
-          <p>Generating your personalized carb-loading plan...</p>
-          <p class="loading-sub">This may take 30–60 seconds</p>
-        </div>
-
-        <div v-else-if="mealPlan && mealPlan.days && mealPlan.days.length > 0" class="meal-plan-content">
-          <div v-if="mealPlan.notes" class="plan-notes">
-            <span class="material-symbols-outlined">info</span>
-            {{ mealPlan.notes }}
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <!-- APPLICATION MODAL                                              -->
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <div v-if="showAppModal" class="modal-overlay" @click.self="closeAppModal">
+        <div class="modal">
+          <div class="modal-header">
+            <h3>{{ editingApp ? 'Edit Application' : 'Add Application' }}</h3>
+            <button class="icon-btn" @click="closeAppModal">
+              <span class="material-symbols-outlined">close</span>
+            </button>
           </div>
 
-          <div class="meal-days">
-            <div v-for="(day, i) in mealPlan.days" :key="i" class="meal-day-card">
-              <div class="meal-day-header">
-                <h3>{{ day.label }}</h3>
-                <div class="day-totals">
-                  <span class="total-tag">{{ day.totalCarbs }}g carbs</span>
-                  <span class="total-tag">{{ day.totalCalories }} kcal</span>
-                </div>
+          <form @submit.prevent="saveApp" class="modal-form">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Company *</label>
+                <input type="text" v-model="appForm.company" placeholder="e.g. Google"
+                  :class="{ invalid: appErrors.company }" :disabled="appSaving" />
+                <span class="field-error" v-if="appErrors.company">{{ appErrors.company }}</span>
               </div>
-              <div class="meals-list">
-                <div v-for="(meal, j) in day.meals" :key="j" class="meal-item">
-                  <div class="meal-time">{{ meal.time }}</div>
-                  <div class="meal-details">
-                    <div class="meal-name">{{ meal.name }}</div>
-                    <div class="meal-desc" v-if="meal.description">{{ meal.description }}</div>
-                  </div>
-                  <div class="meal-macros">
-                    <span>{{ meal.carbs }}g C</span>
-                    <span>{{ meal.calories }} kcal</span>
-                  </div>
-                </div>
+              <div class="form-group">
+                <label>Position *</label>
+                <input type="text" v-model="appForm.position" placeholder="e.g. Software Engineer"
+                  :class="{ invalid: appErrors.position }" :disabled="appSaving" />
+                <span class="field-error" v-if="appErrors.position">{{ appErrors.position }}</span>
               </div>
             </div>
-          </div>
-        </div>
 
-        <div v-else class="empty-state">
-          <span class="material-symbols-outlined">restaurant</span>
-          <p>No meal plan yet. Click "Generate AI Plan" to create your personalized 3-day carb-loading plan.</p>
-        </div>
-      </section>
-
-      <!-- ── TIMELINE TAB ── -->
-      <section v-show="activeTab === 'timeline'" class="tab-content">
-        <div class="section-header">
-          <h2><span class="material-symbols-outlined">schedule</span> Race Preparation Timeline</h2>
-        </div>
-
-        <div v-if="!athlete" class="empty-state">
-          <span class="material-symbols-outlined">person_off</span>
-          <p>Create an athlete profile first to see your race timeline.</p>
-        </div>
-
-        <div v-else>
-          <!-- Countdown banner -->
-          <div class="countdown-banner" :class="urgencyClass">
-            <div class="countdown-big">
-              <span class="material-symbols-outlined">flag</span>
-              <span class="countdown-big-number">{{ daysUntilRace }}</span>
-              <span class="countdown-big-label">days until {{ athlete.raceLocation }}</span>
-            </div>
-            <div class="race-date-display">
-              {{ formatDate(athlete.raceDate) }}
-            </div>
-          </div>
-
-          <div v-if="remindersLoading" class="loading-state">
-            <span class="material-symbols-outlined spin">progress_activity</span> Loading reminders...
-          </div>
-
-          <div v-else-if="reminders.length === 0" class="empty-state">
-            <span class="material-symbols-outlined">notifications_off</span>
-            <p>No reminders yet. Generate a plan from the Meal Plan tab to populate your timeline.</p>
-          </div>
-
-          <div v-else class="reminders-timeline">
-            <div
-              v-for="reminder in sortedReminders"
-              :key="reminder._id"
-              :class="['reminder-card', `priority-${reminder.priority}`, `cat-${reminder.category}`]"
-            >
-              <div class="reminder-left">
-                <span class="material-symbols-outlined reminder-cat-icon">{{ getCategoryIcon(reminder.category) }}</span>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Status</label>
+                <select v-model="appForm.status" :disabled="appSaving">
+                  <option value="applied">Applied</option>
+                  <option value="interviewing">Interviewing</option>
+                  <option value="offer">Offer</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="ghosted">Ghosted</option>
+                </select>
               </div>
-              <div class="reminder-body">
-                <div class="reminder-header-row">
-                  <span class="reminder-title">{{ reminder.title }}</span>
-                  <span :class="['priority-badge', `priority-${reminder.priority}`]">{{ reminder.priority }}</span>
-                </div>
-                <p class="reminder-message">{{ reminder.message }}</p>
-              </div>
-              <div class="reminder-right">
-                <span class="days-badge">{{ reminder.daysBeforeRace }}d out</span>
-                <span class="cat-badge">{{ reminder.category }}</span>
+              <div class="form-group">
+                <label>Applied Date *</label>
+                <input type="date" v-model="appForm.appliedDate"
+                  :class="{ invalid: appErrors.appliedDate }" :disabled="appSaving" />
+                <span class="field-error" v-if="appErrors.appliedDate">{{ appErrors.appliedDate }}</span>
               </div>
             </div>
-          </div>
+
+            <div class="form-group">
+              <label>Job URL</label>
+              <input type="url" v-model="appForm.jobUrl" placeholder="https://..." :disabled="appSaving" />
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Contact Name</label>
+                <input type="text" v-model="appForm.contactName" placeholder="Recruiter name" :disabled="appSaving" />
+              </div>
+              <div class="form-group">
+                <label>Contact Email</label>
+                <input type="email" v-model="appForm.contactEmail" placeholder="recruiter@company.com" :disabled="appSaving" />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Notes</label>
+              <textarea v-model="appForm.notes" placeholder="Referral, interview notes, etc." rows="3" :disabled="appSaving"></textarea>
+            </div>
+
+            <div class="modal-footer">
+              <button type="button" class="btn-ghost" @click="closeAppModal" :disabled="appSaving">Cancel</button>
+              <button type="submit" class="btn-primary" :disabled="appSaving">
+                <span class="material-symbols-outlined">{{ appSaving ? 'progress_activity' : 'save' }}</span>
+                {{ appSaving ? 'Saving...' : 'Save' }}
+              </button>
+            </div>
+          </form>
         </div>
-      </section>
-    </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <!-- CONTACT MODAL                                                  -->
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <div v-if="showContactModal" class="modal-overlay" @click.self="closeContactModal">
+        <div class="modal">
+          <div class="modal-header">
+            <h3>{{ editingContact ? 'Edit Contact' : 'Add Contact' }}</h3>
+            <button class="icon-btn" @click="closeContactModal">
+              <span class="material-symbols-outlined">close</span>
+            </button>
+          </div>
+
+          <form @submit.prevent="saveContact" class="modal-form">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Name *</label>
+                <input type="text" v-model="contactForm.name" placeholder="Full name"
+                  :class="{ invalid: contactErrors.name }" :disabled="contactSaving" />
+                <span class="field-error" v-if="contactErrors.name">{{ contactErrors.name }}</span>
+              </div>
+              <div class="form-group">
+                <label>Email *</label>
+                <input type="email" v-model="contactForm.email" placeholder="name@company.com"
+                  :class="{ invalid: contactErrors.email }" :disabled="contactSaving" />
+                <span class="field-error" v-if="contactErrors.email">{{ contactErrors.email }}</span>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Company *</label>
+                <input type="text" v-model="contactForm.company" placeholder="Company name"
+                  :class="{ invalid: contactErrors.company }" :disabled="contactSaving" />
+                <span class="field-error" v-if="contactErrors.company">{{ contactErrors.company }}</span>
+              </div>
+              <div class="form-group">
+                <label>Role</label>
+                <input type="text" v-model="contactForm.role" placeholder="e.g. Technical Recruiter" :disabled="contactSaving" />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>LinkedIn URL</label>
+              <input type="url" v-model="contactForm.linkedinUrl" placeholder="https://linkedin.com/in/..." :disabled="contactSaving" />
+            </div>
+
+            <div class="form-group">
+              <label>Notes</label>
+              <textarea v-model="contactForm.notes" placeholder="How you met, context, etc." rows="2" :disabled="contactSaving"></textarea>
+            </div>
+
+            <div class="modal-footer">
+              <button type="button" class="btn-ghost" @click="closeContactModal" :disabled="contactSaving">Cancel</button>
+              <button type="submit" class="btn-primary" :disabled="contactSaving">
+                <span class="material-symbols-outlined">{{ contactSaving ? 'progress_activity' : 'save' }}</span>
+                {{ contactSaving ? 'Saving...' : 'Save' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+    </div><!-- #app -->
 
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="app.js"></script>
