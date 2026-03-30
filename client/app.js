@@ -4,17 +4,15 @@ createApp({
   data() {
     return {
       apiUrl: "http://localhost:8080",
-      activeTab: "dashboard",
+      activeTab: "applications",
 
       tabs: [
-        { id: "dashboard",    label: "Dashboard",    icon: "dashboard" },
         { id: "applications", label: "Applications", icon: "work" },
-        { id: "contacts",     label: "Contacts",     icon: "contacts" },
         { id: "followups",    label: "Follow-ups",   icon: "mail" },
+        { id: "activity",     label: "Activity",     icon: "history" },
       ],
 
-      statusFilters: [
-        { value: "all",          label: "All" },
+      statusList: [
         { value: "applied",      label: "Applied" },
         { value: "interviewing", label: "Interviewing" },
         { value: "offer",        label: "Offer" },
@@ -22,396 +20,192 @@ createApp({
         { value: "ghosted",      label: "Ghosted" },
       ],
 
-      // Gmail
-      gmailConnected: false,
-
-      // Applications
+      // Data
       applications: [],
-      applicationsLoading: false,
-      appFilter: "all",
-      showAppModal: false,
-      editingApp: null,
-      appForm: { company: "", position: "", status: "applied", appliedDate: "", jobUrl: "", notes: "", contactName: "", contactEmail: "" },
-      appErrors: {},
-      appSaving: false,
-
-      // Scanning
-      scanning: false,
-
-      // Contacts
-      contacts: [],
-      contactsLoading: false,
-      showContactModal: false,
-      editingContact: null,
-      contactForm: { name: "", email: "", company: "", role: "", linkedinUrl: "", notes: "" },
-      contactErrors: {},
-      contactSaving: false,
-
-      // Follow-ups
-      followUps: [],
-      followUpsLoading: false,
-
-      // Activity
+      followUps:    [],
       activityLogs: [],
-      activityLoading: false,
 
-      // Global message
-      globalMessage: "",
-      globalMessageType: "success",
-      globalMessageTimer: null,
+      // UI state
+      gmailConnected: false,
+      loading:  false,
+      scanning: false,
+      saving:   false,
+      appFilter: "all",
+
+      // Modal
+      showModal: false,
+      editing: null,
+      form: { company: "", position: "", status: "applied", appliedDate: "", jobUrl: "", notes: "", contactName: "", contactEmail: "" },
+      errors: {},
+
+      // Message banner
+      message: "",
+      messageType: "success",
     };
   },
 
   computed: {
-    filteredApplications() {
-      if (this.appFilter === "all") return this.applications;
-      return this.applications.filter((a) => a.status === this.appFilter);
+    filtered() {
+      return this.appFilter === "all"
+        ? this.applications
+        : this.applications.filter((a) => a.status === this.appFilter);
     },
-
     activeCount() {
       return this.applications.filter((a) => ["applied", "interviewing"].includes(a.status)).length;
     },
-
-    pendingFollowUps() {
+    pendingCount() {
       return this.followUps.filter((f) => !f.sent).length;
     },
   },
 
   mounted() {
-    this.fetchGmailStatus();
-    this.fetchApplications();
-    this.fetchContacts();
-    this.fetchFollowUps();
-    this.fetchActivityLogs();
+    this.load();
   },
 
   methods: {
-
-    // ── GMAIL ─────────────────────────────────────────────────────────────────
-
-    async fetchGmailStatus() {
-      try {
-        const res = await fetch(`${this.apiUrl}/auth/gmail/status`);
-        const data = await res.json();
-        this.gmailConnected = data.connected;
-      } catch {
-        this.gmailConnected = false;
-      }
+    async load() {
+      this.loading = true;
+      await Promise.all([
+        this.fetchApplications(),
+        this.fetchFollowUps(),
+        this.fetchActivity(),
+        this.fetchGmailStatus(),
+      ]);
+      this.loading = false;
     },
 
-    connectGmail() {
-      window.open(`${this.apiUrl}/auth/gmail`, "_blank", "width=500,height=600");
-      setTimeout(() => this.fetchGmailStatus(), 5000);
-    },
-
-    // ── APPLICATIONS ──────────────────────────────────────────────────────────
+    // ── FETCH ───────────────────────────────────────────────────────────────
 
     async fetchApplications() {
-      this.applicationsLoading = true;
-      try {
-        const res = await fetch(`${this.apiUrl}/applications`);
-        if (!res.ok) throw new Error("Failed to load applications");
-        this.applications = await res.json();
-      } catch (err) {
-        this.showMessage(err.message, "error");
-      } finally {
-        this.applicationsLoading = false;
-      }
+      const res = await fetch(`${this.apiUrl}/applications`);
+      this.applications = res.ok ? await res.json() : [];
     },
+
+    async fetchFollowUps() {
+      const res = await fetch(`${this.apiUrl}/follow-ups`);
+      this.followUps = res.ok ? await res.json() : [];
+    },
+
+    async fetchActivity() {
+      const res = await fetch(`${this.apiUrl}/activity-logs`);
+      this.activityLogs = res.ok ? await res.json() : [];
+    },
+
+    async fetchGmailStatus() {
+      const res = await fetch(`${this.apiUrl}/auth/gmail/status`).catch(() => null);
+      this.gmailConnected = res?.ok ? (await res.json()).connected : false;
+    },
+
+    // ── APPLICATIONS ────────────────────────────────────────────────────────
 
     countByStatus(status) {
       return this.applications.filter((a) => a.status === status).length;
     },
 
-    openAppModal(app) {
-      this.editingApp = app;
-      if (app) {
-        this.appForm = {
-          company: app.company,
-          position: app.position,
-          status: app.status,
-          appliedDate: app.appliedDate ? new Date(app.appliedDate).toISOString().split("T")[0] : "",
-          jobUrl: app.jobUrl || "",
-          notes: app.notes || "",
-          contactName: app.contactName || "",
-          contactEmail: app.contactEmail || "",
-        };
-      } else {
-        this.appForm = { company: "", position: "", status: "applied", appliedDate: "", jobUrl: "", notes: "", contactName: "", contactEmail: "" };
-      }
-      this.appErrors = {};
-      this.showAppModal = true;
+    openModal(app) {
+      this.editing = app;
+      this.errors = {};
+      this.form = app
+        ? { ...app, appliedDate: app.appliedDate ? new Date(app.appliedDate).toISOString().split("T")[0] : "" }
+        : { company: "", position: "", status: "applied", appliedDate: "", jobUrl: "", notes: "", contactName: "", contactEmail: "" };
+      this.showModal = true;
     },
 
-    closeAppModal() {
-      this.showAppModal = false;
-      this.editingApp = null;
-      this.appErrors = {};
+    closeModal() {
+      this.showModal = false;
+      this.editing = null;
+      this.errors = {};
     },
 
-    validateApp() {
+    validate() {
       const e = {};
-      if (!this.appForm.company.trim())   e.company   = "Company is required";
-      if (!this.appForm.position.trim())  e.position  = "Position is required";
-      if (!this.appForm.appliedDate)      e.appliedDate = "Applied date is required";
-      this.appErrors = e;
-      return Object.keys(e).length === 0;
+      if (!this.form.company.trim())  e.company   = "Required";
+      if (!this.form.position.trim()) e.position  = "Required";
+      if (!this.form.appliedDate)     e.appliedDate = "Required";
+      this.errors = e;
+      return !Object.keys(e).length;
     },
 
     async saveApp() {
-      if (!this.validateApp()) return;
-      this.appSaving = true;
+      if (!this.validate()) return;
+      this.saving = true;
       try {
-        let res;
-        if (this.editingApp) {
-          res = await fetch(`${this.apiUrl}/applications/${this.editingApp._id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(this.appForm),
-          });
-        } else {
-          res = await fetch(`${this.apiUrl}/applications`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(this.appForm),
-          });
-        }
-        if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error || "Failed to save");
-        }
-        this.closeAppModal();
-        await Promise.all([this.fetchApplications(), this.fetchActivityLogs()]);
-        this.showMessage(this.editingApp ? "Application updated" : "Application added", "success");
+        const url    = this.editing ? `${this.apiUrl}/applications/${this.editing._id}` : `${this.apiUrl}/applications`;
+        const method = this.editing ? "PUT" : "POST";
+        const res    = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(this.form) });
+        const data   = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        this.closeModal();
+        await Promise.all([this.fetchApplications(), this.fetchActivity()]);
+        this.notify(this.editing ? "Application updated" : "Application added");
       } catch (err) {
-        this.showMessage(err.message, "error");
+        this.notify(err.message, "error");
       } finally {
-        this.appSaving = false;
+        this.saving = false;
       }
     },
 
     async deleteApp(id) {
-      if (!confirm("Delete this application? This cannot be undone.")) return;
-      try {
-        const res = await fetch(`${this.apiUrl}/applications/${id}`, { method: "DELETE" });
-        if (!res.ok) throw new Error("Failed to delete");
-        this.applications = this.applications.filter((a) => a._id !== id);
-        await Promise.all([this.fetchFollowUps(), this.fetchActivityLogs()]);
-        this.showMessage("Application deleted", "success");
-      } catch (err) {
-        this.showMessage(err.message, "error");
+      if (!confirm("Delete this application?")) return;
+      const res = await fetch(`${this.apiUrl}/applications/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        await Promise.all([this.fetchApplications(), this.fetchFollowUps(), this.fetchActivity()]);
+        this.notify("Deleted");
       }
     },
 
-    // ── SCAN INBOX ────────────────────────────────────────────────────────────
+    // ── SCAN INBOX ──────────────────────────────────────────────────────────
 
     async scanInbox() {
       this.scanning = true;
       try {
-        const res = await fetch(`${this.apiUrl}/scan-inbox`, { method: "POST" });
+        const res  = await fetch(`${this.apiUrl}/scan-inbox`, { method: "POST" });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Scan failed");
-        await Promise.all([
-          this.fetchApplications(),
-          this.fetchFollowUps(),
-          this.fetchActivityLogs(),
-        ]);
-        this.showMessage(
-          `Scan complete — ${data.threadsFound} threads found, ${data.classified} classified, ${data.followUpsDrafted} follow-ups drafted`,
-          "success"
-        );
+        if (!res.ok) throw new Error(data.error);
+        await Promise.all([this.fetchApplications(), this.fetchFollowUps(), this.fetchActivity()]);
+        this.notify(`Scan complete — ${data.threadsFound} threads, ${data.classified} classified, ${data.followUpsDrafted} drafts`);
+        this.activeTab = "followups";
       } catch (err) {
-        this.showMessage(err.message, "error");
+        this.notify(err.message, "error");
       } finally {
         this.scanning = false;
       }
     },
 
-    // ── CONTACTS ──────────────────────────────────────────────────────────────
-
-    async fetchContacts() {
-      this.contactsLoading = true;
-      try {
-        const res = await fetch(`${this.apiUrl}/contacts`);
-        if (!res.ok) throw new Error("Failed to load contacts");
-        this.contacts = await res.json();
-      } catch (err) {
-        this.showMessage(err.message, "error");
-      } finally {
-        this.contactsLoading = false;
-      }
-    },
-
-    openContactModal(contact) {
-      this.editingContact = contact;
-      if (contact) {
-        this.contactForm = {
-          name: contact.name,
-          email: contact.email,
-          company: contact.company,
-          role: contact.role || "",
-          linkedinUrl: contact.linkedinUrl || "",
-          notes: contact.notes || "",
-        };
-      } else {
-        this.contactForm = { name: "", email: "", company: "", role: "", linkedinUrl: "", notes: "" };
-      }
-      this.contactErrors = {};
-      this.showContactModal = true;
-    },
-
-    closeContactModal() {
-      this.showContactModal = false;
-      this.editingContact = null;
-      this.contactErrors = {};
-    },
-
-    validateContact() {
-      const e = {};
-      if (!this.contactForm.name.trim())    e.name    = "Name is required";
-      if (!this.contactForm.email.trim())   e.email   = "Email is required";
-      if (!this.contactForm.company.trim()) e.company = "Company is required";
-      this.contactErrors = e;
-      return Object.keys(e).length === 0;
-    },
-
-    async saveContact() {
-      if (!this.validateContact()) return;
-      this.contactSaving = true;
-      try {
-        let res;
-        if (this.editingContact) {
-          res = await fetch(`${this.apiUrl}/contacts/${this.editingContact._id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(this.contactForm),
-          });
-        } else {
-          res = await fetch(`${this.apiUrl}/contacts`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(this.contactForm),
-          });
-        }
-        if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error || "Failed to save contact");
-        }
-        this.closeContactModal();
-        await this.fetchContacts();
-        this.showMessage(this.editingContact ? "Contact updated" : "Contact added", "success");
-      } catch (err) {
-        this.showMessage(err.message, "error");
-      } finally {
-        this.contactSaving = false;
-      }
-    },
-
-    async deleteContact(id) {
-      if (!confirm("Delete this contact?")) return;
-      try {
-        const res = await fetch(`${this.apiUrl}/contacts/${id}`, { method: "DELETE" });
-        if (!res.ok) throw new Error("Failed to delete contact");
-        this.contacts = this.contacts.filter((c) => c._id !== id);
-        this.showMessage("Contact deleted", "success");
-      } catch (err) {
-        this.showMessage(err.message, "error");
-      }
-    },
-
-    // ── FOLLOW-UPS ────────────────────────────────────────────────────────────
-
-    async fetchFollowUps() {
-      this.followUpsLoading = true;
-      try {
-        const res = await fetch(`${this.apiUrl}/follow-ups`);
-        if (!res.ok) throw new Error("Failed to load follow-ups");
-        this.followUps = await res.json();
-      } catch (err) {
-        this.showMessage(err.message, "error");
-      } finally {
-        this.followUpsLoading = false;
-      }
-    },
+    // ── FOLLOW-UPS ──────────────────────────────────────────────────────────
 
     async markSent(fu) {
-      try {
-        const res = await fetch(`${this.apiUrl}/follow-ups/${fu._id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sent: true }),
-        });
-        if (!res.ok) throw new Error("Failed to update follow-up");
-        const updated = await res.json();
-        const idx = this.followUps.findIndex((f) => f._id === fu._id);
-        if (idx !== -1) this.followUps[idx] = updated;
-        await this.fetchActivityLogs();
-        this.showMessage("Marked as sent", "success");
-      } catch (err) {
-        this.showMessage(err.message, "error");
+      const res = await fetch(`${this.apiUrl}/follow-ups/${fu._id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sent: true }),
+      });
+      if (res.ok) {
+        await Promise.all([this.fetchFollowUps(), this.fetchActivity()]);
+        this.notify("Marked as sent");
       }
     },
 
     async deleteFollowUp(id) {
-      try {
-        const res = await fetch(`${this.apiUrl}/follow-ups/${id}`, { method: "DELETE" });
-        if (!res.ok) throw new Error("Failed to delete follow-up");
-        this.followUps = this.followUps.filter((f) => f._id !== id);
-        this.showMessage("Follow-up deleted", "success");
-      } catch (err) {
-        this.showMessage(err.message, "error");
-      }
+      const res = await fetch(`${this.apiUrl}/follow-ups/${id}`, { method: "DELETE" });
+      if (res.ok) { this.followUps = this.followUps.filter((f) => f._id !== id); this.notify("Deleted"); }
     },
 
-    // ── ACTIVITY LOGS ─────────────────────────────────────────────────────────
+    // ── UTILITIES ───────────────────────────────────────────────────────────
 
-    async fetchActivityLogs() {
-      this.activityLoading = true;
-      try {
-        const res = await fetch(`${this.apiUrl}/activity-logs`);
-        if (!res.ok) throw new Error("Failed to load activity");
-        this.activityLogs = await res.json();
-      } catch (err) {
-        console.error(err);
-      } finally {
-        this.activityLoading = false;
-      }
+    fmtDate(d) {
+      return d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
     },
 
-    eventIcon(event) {
-      const icons = {
-        "status-change":   "swap_horiz",
-        "email-received":  "mail",
-        "follow-up-sent":  "send",
-        "ai-scan":         "auto_awesome",
-        "created":         "add_circle",
-        "updated":         "edit",
-      };
-      return icons[event] || "circle";
+    fmtDateTime(d) {
+      return d ? new Date(d).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
     },
 
-    // ── UTILITIES ─────────────────────────────────────────────────────────────
-
-    formatDate(dateStr) {
-      if (!dateStr) return "";
-      return new Date(dateStr).toLocaleDateString("en-US", {
-        month: "short", day: "numeric", year: "numeric",
-        hour: "2-digit", minute: "2-digit",
-      });
-    },
-
-    formatShortDate(dateStr) {
-      if (!dateStr) return "";
-      return new Date(dateStr).toLocaleDateString("en-US", {
-        month: "short", day: "numeric", year: "numeric",
-      });
-    },
-
-    showMessage(msg, type = "success") {
-      this.globalMessage = msg;
-      this.globalMessageType = type;
-      if (this.globalMessageTimer) clearTimeout(this.globalMessageTimer);
-      this.globalMessageTimer = setTimeout(() => { this.globalMessage = ""; }, 5000);
+    notify(msg, type = "success") {
+      this.message = msg;
+      this.messageType = type;
+      clearTimeout(this._msgTimer);
+      this._msgTimer = setTimeout(() => { this.message = ""; }, 4000);
     },
   },
 }).mount("#app");

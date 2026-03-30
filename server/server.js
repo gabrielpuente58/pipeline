@@ -7,538 +7,352 @@ const { google } = require("googleapis");
 const { Ollama } = require("ollama");
 const { StateGraph, START, END } = require("@langchain/langgraph");
 
-const Application = require("./models/Application");
-const Contact = require("./models/Contact");
-const FollowUp = require("./models/FollowUp");
-const ActivityLog = require("./models/ActivityLog");
-const GmailToken = require("./models/GmailToken");
-const { seedApplications } = require("./seed");
-
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017";
-const DB_NAME = process.env.DB_NAME || "pipeline";
-const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://golem:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gpt-oss:20b";
-const PORT = process.env.PORT || 8080;
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-const GOOGLE_REDIRECT_URI =
-  process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/auth/gmail/callback`;
-
-// ─── EXPRESS ──────────────────────────────────────────────────────────────────
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ─── MONGODB ──────────────────────────────────────────────────────────────────
-
-mongoose
-  .connect(`${MONGODB_URI}/${DB_NAME}`)
-  .then(async () => {
-    console.log("Connected to MongoDB");
-    await seedApplications(Application);
-  })
-  .catch((err) => console.error("MongoDB connection error:", err));
-
-// ─── OLLAMA ───────────────────────────────────────────────────────────────────
+const MONGODB_URI    = process.env.MONGODB_URI    || "mongodb://localhost:27017";
+const DB_NAME        = process.env.DB_NAME        || "pipeline";
+const OLLAMA_HOST    = process.env.OLLAMA_HOST    || "http://golem:11434";
+const OLLAMA_MODEL   = process.env.OLLAMA_MODEL   || "gpt-oss:20b";
+const PORT           = process.env.PORT           || 8080;
+const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const GOOGLE_REDIRECT_URI  = process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/auth/gmail/callback`;
 
 const ollama = new Ollama({ host: OLLAMA_HOST });
 
-// ─── GMAIL OAUTH ──────────────────────────────────────────────────────────────
+// ─── DATABASE ─────────────────────────────────────────────────────────────────
 
-function getOAuth2Client() {
+mongoose
+  .connect(`${MONGODB_URI}/${DB_NAME}`)
+  .then(() => {
+    console.log("Connected to MongoDB");
+    // seed one example application if the collection is empty
+    Application.countDocuments().then((n) => {
+      if (n === 0) {
+        Application.create({
+          company: "Google", position: "Software Engineer II",
+          status: "interviewing", appliedDate: new Date(Date.now() - 14 * 86400000),
+          notes: "Phone screen scheduled.", contactName: "Sarah Chen", contactEmail: "schen@google.com",
+        });
+      }
+    });
+  })
+  .catch((err) => console.error("MongoDB error:", err));
+
+// ─── SCHEMAS (all defined here — no separate model files) ─────────────────────
+
+const Application = mongoose.model("Application", new mongoose.Schema({
+  company:      { type: String, required: [true, "Company is required"] },
+  position:     { type: String, required: [true, "Position is required"] },
+  status:       { type: String, enum: ["applied", "interviewing", "offer", "rejected", "ghosted"], default: "applied" },
+  appliedDate:  { type: Date,   required: [true, "Applied date is required"] },
+  jobUrl:       String,
+  notes:        String,
+  contactName:  String,
+  contactEmail: String,
+}, { timestamps: true }));
+
+const FollowUp = mongoose.model("FollowUp", new mongoose.Schema({
+  applicationId: { type: mongoose.Schema.Types.ObjectId, ref: "Application", required: true },
+  subject:       { type: String, required: true },
+  body:          { type: String, required: true },
+  sent:          { type: Boolean, default: false },
+  draftedByAI:   { type: Boolean, default: false },
+}, { timestamps: true }));
+
+const ActivityLog = mongoose.model("ActivityLog", new mongoose.Schema({
+  applicationId: mongoose.Schema.Types.ObjectId,
+  event:         { type: String, enum: ["status-change", "email-received", "follow-up-sent", "ai-scan", "created"], required: true },
+  description:   { type: String, required: true },
+  timestamp:     { type: Date, default: Date.now },
+}));
+
+const GmailToken = mongoose.model("GmailToken", new mongoose.Schema({
+  access_token:  { type: String, required: true },
+  refresh_token: { type: String, required: true },
+  expiry_date:   Number,
+}));
+
+// ─── GMAIL ────────────────────────────────────────────────────────────────────
+
+function makeOAuthClient() {
   return new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
 }
 
 async function getGmailClient() {
-  const tokenDoc = await GmailToken.findOne().sort({ createdAt: -1 });
-  if (!tokenDoc) throw new Error("Gmail not connected");
-  const auth = getOAuth2Client();
+  const token = await GmailToken.findOne();
+  if (!token) throw new Error("Gmail not connected");
+  const auth = makeOAuthClient();
   auth.setCredentials({
-    access_token: tokenDoc.access_token,
-    refresh_token: tokenDoc.refresh_token,
-    expiry_date: tokenDoc.expiry_date,
+    access_token: token.access_token,
+    refresh_token: token.refresh_token,
+    expiry_date: token.expiry_date,
   });
   return google.gmail({ version: "v1", auth });
 }
 
-// ─── LANGGRAPH TOOLS ──────────────────────────────────────────────────────────
+// ─── AI AGENT ────────────────────────────────────────────────────────────────
+//
+// Triggered by POST /scan-inbox. Runs 5 nodes in order:
+//   scanEmails → classifyEmails → checkSilent → draftFollowUps → submitResults
+//
+// Two LLM tools define the structured output we expect from Ollama:
 
-const classifyEmailToolDef = {
+const classifyTool = {
   type: "function",
   function: {
-    name: "classify_email_thread",
-    description:
-      "Classify a job application email thread as interview_request, rejection, offer, or no_response.",
+    name: "classify_email",
+    description: "Classify a job application email thread",
     parameters: {
       type: "object",
       properties: {
-        classification: {
-          type: "string",
-          enum: ["interview_request", "rejection", "offer", "no_response"],
-          description: "The classification of the email thread",
-        },
-        confidence: {
-          type: "string",
-          enum: ["high", "medium", "low"],
-        },
-        summary: {
-          type: "string",
-          description: "One-sentence summary of what the email says",
-        },
+        classification: { type: "string", enum: ["interview_request", "rejection", "offer", "no_response"] },
+        summary:        { type: "string", description: "One sentence summary of the email" },
       },
-      required: ["classification", "confidence", "summary"],
+      required: ["classification", "summary"],
     },
   },
 };
 
-const draftFollowUpToolDef = {
+const draftTool = {
   type: "function",
   function: {
-    name: "draft_follow_up_email",
-    description: "Draft a professional follow-up email for a silent job application.",
+    name: "draft_follow_up",
+    description: "Draft a follow-up email for a silent job application",
     parameters: {
       type: "object",
       properties: {
-        subject: { type: "string", description: "Email subject line" },
-        body: { type: "string", description: "Full email body" },
+        subject: { type: "string" },
+        body:    { type: "string" },
       },
       required: ["subject", "body"],
     },
   },
 };
 
-// ─── GRAPH STATE ──────────────────────────────────────────────────────────────
-
-const graphStateData = {
-  applications: { value: (_x, y) => y, default: () => [] },
-  emailThreads: { value: (_x, y) => y, default: () => [] },
-  classifications: { value: (_x, y) => _x.concat(y), default: () => [] },
-  silentApps: { value: (_x, y) => y, default: () => [] },
-  followUpDrafts: { value: (_x, y) => _x.concat(y), default: () => [] },
+// Graph state — what gets passed between nodes
+const graphState = {
+  applications:    { value: (_, y) => y,          default: () => [] },
+  emailThreads:    { value: (_, y) => y,          default: () => [] },
+  classifications: { value: (x, y) => x.concat(y), default: () => [] },
+  silentApps:      { value: (_, y) => y,          default: () => [] },
+  followUpDrafts:  { value: (x, y) => x.concat(y), default: () => [] },
 };
 
-// ─── GRAPH NODES ──────────────────────────────────────────────────────────────
-
+// Node 1 — search Gmail for threads from tracked companies
 async function scanEmailsNode(state) {
-  console.log("scanEmailsNode: scanning Gmail...");
-  const threads = [];
-
   let gmail;
-  try {
-    gmail = await getGmailClient();
-  } catch {
-    console.log("Gmail not connected — skipping email scan");
-    return { emailThreads: [] };
-  }
+  try { gmail = await getGmailClient(); }
+  catch { console.log("Gmail not connected, skipping scan"); return { emailThreads: [] }; }
 
+  const threads = [];
   for (const app of state.applications) {
-    try {
-      const q = `"${app.company}" OR subject:"${app.position}"`;
-      const res = await gmail.users.threads.list({ userId: "me", q, maxResults: 3 });
-      if (!res.data.threads) continue;
+    const res = await gmail.users.threads
+      .list({ userId: "me", q: `"${app.company}" OR subject:"${app.position}"`, maxResults: 3 })
+      .catch(() => ({ data: {} }));
 
-      for (const t of res.data.threads) {
-        const data = await gmail.users.threads.get({ userId: "me", id: t.id });
-        const content = (data.data.messages || [])
-          .map((m) => {
-            const subject = m.payload.headers?.find((h) => h.name === "Subject")?.value || "";
-            const from = m.payload.headers?.find((h) => h.name === "From")?.value || "";
-            return `From: ${from}\nSubject: ${subject}\nSnippet: ${m.snippet}`;
-          })
-          .join("\n---\n");
-
-        threads.push({
-          applicationId: app._id.toString(),
-          company: app.company,
-          position: app.position,
-          threadId: t.id,
-          content,
-        });
-      }
-    } catch (err) {
-      console.error(`Gmail scan error for ${app.company}:`, err.message);
+    for (const t of res.data.threads || []) {
+      const data = await gmail.users.threads.get({ userId: "me", id: t.id }).catch(() => null);
+      if (!data) continue;
+      const content = (data.data.messages || []).map((m) => {
+        const subject = m.payload.headers?.find((h) => h.name === "Subject")?.value || "";
+        const from    = m.payload.headers?.find((h) => h.name === "From")?.value || "";
+        return `From: ${from}\nSubject: ${subject}\nSnippet: ${m.snippet}`;
+      }).join("\n---\n");
+      threads.push({ applicationId: app._id.toString(), company: app.company, position: app.position, content });
     }
   }
-
-  console.log(`scanEmailsNode: found ${threads.length} threads`);
+  console.log(`scanEmails: found ${threads.length} threads`);
   return { emailThreads: threads };
 }
 
+// Node 2 — ask the LLM to classify each thread
 async function classifyEmailsNode(state) {
-  console.log("classifyEmailsNode: classifying...");
   const classifications = [];
-
   for (const thread of state.emailThreads) {
-    try {
-      const response = await ollama.chat({
-        model: OLLAMA_MODEL,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a job search assistant. Classify the email thread for the given job application by calling classify_email_thread.",
-          },
-          {
-            role: "user",
-            content: `Company: ${thread.company}\nPosition: ${thread.position}\n\nThread:\n${thread.content}`,
-          },
-        ],
-        tools: [classifyEmailToolDef],
-        stream: false,
-      });
+    const res = await ollama.chat({
+      model: OLLAMA_MODEL,
+      messages: [
+        { role: "system", content: "Classify this job application email thread by calling classify_email." },
+        { role: "user",   content: `Company: ${thread.company}\nPosition: ${thread.position}\n\n${thread.content}` },
+      ],
+      tools: [classifyTool],
+      stream: false,
+    }).catch(() => null);
 
-      const tc = response.message.tool_calls?.[0];
-      if (tc?.function.name === "classify_email_thread") {
-        classifications.push({
-          applicationId: thread.applicationId,
-          company: thread.company,
-          ...tc.function.arguments,
-        });
-      }
-    } catch (err) {
-      console.error(`Classify error for ${thread.company}:`, err.message);
+    const tc = res?.message.tool_calls?.[0];
+    if (tc?.function.name === "classify_email") {
+      classifications.push({ applicationId: thread.applicationId, company: thread.company, ...tc.function.arguments });
     }
   }
-
-  console.log(`classifyEmailsNode: classified ${classifications.length}`);
+  console.log(`classifyEmails: classified ${classifications.length}`);
   return { classifications };
 }
 
+// Node 3 — find applications silent for 7+ days (no update)
 async function checkSilentNode(state) {
-  console.log("checkSilentNode: finding silent apps...");
-  const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-
-  const silent = state.applications.filter((app) => {
-    if (["offer", "rejected", "ghosted"].includes(app.status)) return false;
-    return new Date(app.updatedAt) < cutoff;
-  });
-
-  console.log(`checkSilentNode: ${silent.length} silent apps`);
-  return { silentApps: silent };
+  const cutoff = new Date(Date.now() - 7 * 86400000);
+  const silentApps = state.applications.filter(
+    (app) => !["offer", "rejected", "ghosted"].includes(app.status) && new Date(app.updatedAt) < cutoff
+  );
+  console.log(`checkSilent: ${silentApps.length} silent apps`);
+  return { silentApps };
 }
 
+// Node 4 — ask the LLM to draft a follow-up for each silent app
 async function draftFollowUpsNode(state) {
-  console.log("draftFollowUpsNode: drafting follow-ups...");
-  const drafts = [];
-
+  const followUpDrafts = [];
   for (const app of state.silentApps) {
-    try {
-      const daysSilent = Math.floor(
-        (Date.now() - new Date(app.updatedAt)) / (1000 * 60 * 60 * 24)
-      );
+    const days = Math.floor((Date.now() - new Date(app.updatedAt)) / 86400000);
+    const res = await ollama.chat({
+      model: OLLAMA_MODEL,
+      messages: [
+        { role: "system", content: "Draft a professional follow-up email by calling draft_follow_up." },
+        { role: "user",   content: `Company: ${app.company}\nPosition: ${app.position}\nApplied ${days} days ago\nContact: ${app.contactName || "Hiring Manager"}` },
+      ],
+      tools: [draftTool],
+      stream: false,
+    }).catch(() => null);
 
-      const response = await ollama.chat({
-        model: OLLAMA_MODEL,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a career coach. Draft a concise, professional follow-up email by calling draft_follow_up_email.",
-          },
-          {
-            role: "user",
-            content: `Company: ${app.company}\nPosition: ${app.position}\nApplied: ${daysSilent} days ago\nContact: ${app.contactName || "Hiring Manager"}\nStatus: ${app.status}`,
-          },
-        ],
-        tools: [draftFollowUpToolDef],
-        stream: false,
-      });
-
-      const tc = response.message.tool_calls?.[0];
-      if (tc?.function.name === "draft_follow_up_email") {
-        drafts.push({
-          applicationId: app._id.toString(),
-          ...tc.function.arguments,
-        });
-      }
-    } catch (err) {
-      console.error(`Draft error for ${app.company}:`, err.message);
+    const tc = res?.message.tool_calls?.[0];
+    if (tc?.function.name === "draft_follow_up") {
+      followUpDrafts.push({ applicationId: app._id.toString(), ...tc.function.arguments });
     }
   }
-
-  console.log(`draftFollowUpsNode: created ${drafts.length} drafts`);
-  return { followUpDrafts: drafts };
+  console.log(`draftFollowUps: drafted ${followUpDrafts.length}`);
+  return { followUpDrafts };
 }
 
+// Node 5 — save all results to MongoDB
 async function submitResultsNode(state) {
-  console.log("submitResultsNode: persisting...");
+  const statusMap = { interview_request: "interviewing", offer: "offer", rejection: "rejected" };
 
-  const statusMap = {
-    interview_request: "interviewing",
-    offer: "offer",
-    rejection: "rejected",
-    no_response: null,
-  };
-
-  // Apply classifications → update statuses + log
   for (const cls of state.classifications) {
     const newStatus = statusMap[cls.classification];
     if (newStatus) {
-      const app = await Application.findById(cls.applicationId);
-      if (app && app.status !== newStatus) {
-        const oldStatus = app.status;
-        app.status = newStatus;
-        await app.save();
-        await ActivityLog.create({
-          applicationId: app._id,
-          event: "status-change",
-          description: `Status changed from ${oldStatus} → ${newStatus} (AI: ${cls.summary})`,
-        });
+      const doc = await Application.findById(cls.applicationId);
+      if (doc && doc.status !== newStatus) {
+        await Application.findByIdAndUpdate(cls.applicationId, { status: newStatus });
+        await ActivityLog.create({ applicationId: cls.applicationId, event: "status-change", description: `${cls.company}: ${cls.summary}` });
       }
     }
-    await ActivityLog.create({
-      applicationId: cls.applicationId,
-      event: "email-received",
-      description: `Email from ${cls.company}: ${cls.summary}`,
-    });
+    await ActivityLog.create({ applicationId: cls.applicationId, event: "email-received", description: `Email from ${cls.company}: ${cls.summary}` });
   }
 
-  // Save AI follow-up drafts
   for (const draft of state.followUpDrafts) {
-    await FollowUp.create({
-      applicationId: draft.applicationId,
-      subject: draft.subject,
-      body: draft.body,
-      draftedByAI: true,
-    });
+    await FollowUp.create({ applicationId: draft.applicationId, subject: draft.subject, body: draft.body, draftedByAI: true });
   }
 
-  // Log the scan itself
   await ActivityLog.create({
     event: "ai-scan",
-    description: `Inbox scan complete — ${state.emailThreads.length} threads, ${state.classifications.length} classified, ${state.followUpDrafts.length} follow-ups drafted`,
+    description: `Scan complete — ${state.emailThreads.length} threads found, ${state.classifications.length} classified, ${state.followUpDrafts.length} follow-ups drafted`,
   });
-
   return {};
 }
 
-// ─── ROUTING ─────────────────────────────────────────────────────────────────
-
-function routingFunction(state) {
-  if (state.silentApps.length > 0) {
-    console.log("Routing -> draftFollowUps");
-    return "draftFollowUps";
-  }
-  console.log("Routing -> submitResults");
-  return "submitResults";
-}
-
-// ─── BUILD GRAPH ──────────────────────────────────────────────────────────────
-
-const workflow = new StateGraph({ channels: graphStateData });
-workflow.addNode("scanEmails", scanEmailsNode);
+// Wire the graph together
+const workflow = new StateGraph({ channels: graphState });
+workflow.addNode("scanEmails",     scanEmailsNode);
 workflow.addNode("classifyEmails", classifyEmailsNode);
-workflow.addNode("checkSilent", checkSilentNode);
+workflow.addNode("checkSilent",    checkSilentNode);
 workflow.addNode("draftFollowUps", draftFollowUpsNode);
-workflow.addNode("submitResults", submitResultsNode);
+workflow.addNode("submitResults",  submitResultsNode);
 
 workflow.addEdge(START, "scanEmails");
-workflow.addEdge("scanEmails", "classifyEmails");
+workflow.addEdge("scanEmails",     "classifyEmails");
 workflow.addEdge("classifyEmails", "checkSilent");
-workflow.addConditionalEdges("checkSilent", routingFunction, ["draftFollowUps", "submitResults"]);
+workflow.addConditionalEdges("checkSilent",
+  (state) => state.silentApps.length > 0 ? "draftFollowUps" : "submitResults",
+  ["draftFollowUps", "submitResults"]
+);
 workflow.addEdge("draftFollowUps", "submitResults");
-workflow.addEdge("submitResults", END);
+workflow.addEdge("submitResults",  END);
 
 const graph = workflow.compile();
 
-// ─── REST ROUTES: APPLICATIONS ────────────────────────────────────────────────
+// ─── ROUTES: APPLICATIONS ─────────────────────────────────────────────────────
 
 app.get("/applications", async (req, res) => {
   try {
     const filter = req.query.status ? { status: req.query.status } : {};
-    const applications = await Application.find(filter).sort({ appliedDate: -1 });
-    res.json(applications);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await Application.find(filter).sort({ appliedDate: -1 }));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post("/applications", async (req, res) => {
   try {
-    const application = await Application.create(req.body);
-    await ActivityLog.create({
-      applicationId: application._id,
-      event: "created",
-      description: `Applied to ${application.position} at ${application.company}`,
-    });
-    res.status(201).json(application);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
+    const doc = await Application.create(req.body);
+    await ActivityLog.create({ applicationId: doc._id, event: "created", description: `Applied to ${doc.position} at ${doc.company}` });
+    res.status(201).json(doc);
+  } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 app.put("/applications/:id", async (req, res) => {
   try {
     const prev = await Application.findById(req.params.id);
-    if (!prev) return res.status(404).json({ error: "Application not found" });
-
-    const updated = await Application.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    });
-
-    if (prev.status !== updated.status) {
-      await ActivityLog.create({
-        applicationId: updated._id,
-        event: "status-change",
-        description: `Status changed from ${prev.status} → ${updated.status}`,
-      });
-    } else {
-      await ActivityLog.create({
-        applicationId: updated._id,
-        event: "updated",
-        description: `Updated ${updated.company} — ${updated.position}`,
-      });
+    if (!prev) return res.status(404).json({ error: "Not found" });
+    const doc = await Application.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+    if (prev.status !== doc.status) {
+      await ActivityLog.create({ applicationId: doc._id, event: "status-change", description: `${doc.company}: ${prev.status} → ${doc.status}` });
     }
-
-    res.json(updated);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
+    res.json(doc);
+  } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 app.delete("/applications/:id", async (req, res) => {
   try {
-    const app_ = await Application.findByIdAndDelete(req.params.id);
-    if (!app_) return res.status(404).json({ error: "Application not found" });
+    const doc = await Application.findByIdAndDelete(req.params.id);
+    if (!doc) return res.status(404).json({ error: "Not found" });
     await FollowUp.deleteMany({ applicationId: req.params.id });
     await ActivityLog.deleteMany({ applicationId: req.params.id });
-    res.json({ message: "Application deleted" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json({ message: "Deleted" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── REST ROUTES: CONTACTS ────────────────────────────────────────────────────
-
-app.get("/contacts", async (_req, res) => {
-  try {
-    const contacts = await Contact.find().sort({ company: 1, name: 1 });
-    res.json(contacts);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/contacts", async (req, res) => {
-  try {
-    const contact = await Contact.create(req.body);
-    res.status(201).json(contact);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.put("/contacts/:id", async (req, res) => {
-  try {
-    const contact = await Contact.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    });
-    if (!contact) return res.status(404).json({ error: "Contact not found" });
-    res.json(contact);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.delete("/contacts/:id", async (req, res) => {
-  try {
-    const contact = await Contact.findByIdAndDelete(req.params.id);
-    if (!contact) return res.status(404).json({ error: "Contact not found" });
-    res.json({ message: "Contact deleted" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ─── REST ROUTES: FOLLOW-UPS ──────────────────────────────────────────────────
+// ─── ROUTES: FOLLOW-UPS ───────────────────────────────────────────────────────
 
 app.get("/follow-ups", async (_req, res) => {
   try {
-    const followUps = await FollowUp.find()
-      .populate("applicationId", "company position status")
-      .sort({ createdAt: -1 });
-    res.json(followUps);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/follow-ups", async (req, res) => {
-  try {
-    const followUp = await FollowUp.create(req.body);
-    res.status(201).json(followUp);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
+    res.json(await FollowUp.find().populate("applicationId", "company position").sort({ createdAt: -1 }));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put("/follow-ups/:id", async (req, res) => {
   try {
-    const followUp = await FollowUp.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    });
-    if (!followUp) return res.status(404).json({ error: "Follow-up not found" });
-
-    if (req.body.sent === true) {
-      await ActivityLog.create({
-        applicationId: followUp.applicationId,
-        event: "follow-up-sent",
-        description: `Follow-up sent: "${followUp.subject}"`,
-      });
+    const doc = await FollowUp.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    if (!doc) return res.status(404).json({ error: "Not found" });
+    if (req.body.sent) {
+      await ActivityLog.create({ applicationId: doc.applicationId, event: "follow-up-sent", description: `Follow-up sent: "${doc.subject}"` });
     }
-
-    res.json(followUp);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
+    res.json(doc);
+  } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 app.delete("/follow-ups/:id", async (req, res) => {
   try {
-    const followUp = await FollowUp.findByIdAndDelete(req.params.id);
-    if (!followUp) return res.status(404).json({ error: "Follow-up not found" });
-    res.json({ message: "Follow-up deleted" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    const doc = await FollowUp.findByIdAndDelete(req.params.id);
+    if (!doc) return res.status(404).json({ error: "Not found" });
+    res.json({ message: "Deleted" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── REST ROUTES: ACTIVITY LOGS ───────────────────────────────────────────────
+// ─── ROUTES: ACTIVITY LOG ─────────────────────────────────────────────────────
 
-app.get("/activity-logs", async (req, res) => {
+app.get("/activity-logs", async (_req, res) => {
   try {
-    const filter = req.query.applicationId ? { applicationId: req.query.applicationId } : {};
-    const logs = await ActivityLog.find(filter)
-      .sort({ timestamp: -1 })
-      .limit(50);
-    res.json(logs);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await ActivityLog.find().sort({ timestamp: -1 }).limit(50));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete("/activity-logs/:id", async (req, res) => {
-  try {
-    const log = await ActivityLog.findByIdAndDelete(req.params.id);
-    if (!log) return res.status(404).json({ error: "Log not found" });
-    res.json({ message: "Log deleted" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ─── GMAIL AUTH ROUTES ────────────────────────────────────────────────────────
+// ─── ROUTES: GMAIL AUTH ───────────────────────────────────────────────────────
 
 app.get("/auth/gmail", (_req, res) => {
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
-    return res.status(500).json({ error: "Google OAuth credentials not configured" });
-  }
-  const auth = getOAuth2Client();
-  const url = auth.generateAuthUrl({
+  if (!GOOGLE_CLIENT_ID) return res.status(500).json({ error: "Google credentials not set in .env" });
+  const url = makeOAuthClient().generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
     scope: ["https://www.googleapis.com/auth/gmail.readonly"],
@@ -548,51 +362,31 @@ app.get("/auth/gmail", (_req, res) => {
 
 app.get("/auth/gmail/callback", async (req, res) => {
   try {
-    const { code } = req.query;
-    const auth = getOAuth2Client();
-    const { tokens } = await auth.getToken(code);
-
+    const { tokens } = await makeOAuthClient().getToken(req.query.code);
     await GmailToken.deleteMany({});
-    await GmailToken.create({
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-      expiry_date: tokens.expiry_date,
-    });
-
-    res.send(`<script>window.close();</script><p>Gmail connected! You can close this window.</p>`);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    await GmailToken.create({ access_token: tokens.access_token, refresh_token: tokens.refresh_token, expiry_date: tokens.expiry_date });
+    res.send("<p>Gmail connected! You can close this tab.</p>");
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get("/auth/gmail/status", async (_req, res) => {
-  try {
-    const token = await GmailToken.findOne();
-    res.json({ connected: !!token });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  const token = await GmailToken.findOne();
+  res.json({ connected: !!token });
 });
 
-// ─── SCAN INBOX ───────────────────────────────────────────────────────────────
+// ─── ROUTE: SCAN INBOX (runs the AI agent) ────────────────────────────────────
 
 app.post("/scan-inbox", async (_req, res) => {
   try {
-    const applications = await Application.find({
-      status: { $in: ["applied", "interviewing"] },
-    });
+    const applications = await Application.find({ status: { $in: ["applied", "interviewing"] } });
+    if (!applications.length) return res.json({ message: "No active applications to scan" });
 
-    if (applications.length === 0) {
-      return res.json({ message: "No active applications to scan", results: {} });
-    }
-
-    const finalState = await graph.invoke({ applications });
-
+    const state = await graph.invoke({ applications });
     res.json({
-      message: "Inbox scan complete",
-      threadsFound: finalState.emailThreads.length,
-      classified: finalState.classifications.length,
-      followUpsDrafted: finalState.followUpDrafts.length,
+      message: "Scan complete",
+      threadsFound:     state.emailThreads.length,
+      classified:       state.classifications.length,
+      followUpsDrafted: state.followUpDrafts.length,
     });
   } catch (err) {
     console.error("scan-inbox error:", err);
@@ -602,6 +396,4 @@ app.post("/scan-inbox", async (_req, res) => {
 
 // ─── START ────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
-  console.log(`Pipeline server running on http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`Pipeline running on http://localhost:${PORT}`));
