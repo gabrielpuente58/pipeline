@@ -4,11 +4,8 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 
-const { ChatOllama } = require("@langchain/ollama");
-const { HumanMessage, SystemMessage, ToolMessage } = require("@langchain/core/messages");
+const { Ollama } = require("ollama");
 const { StateGraph, START, END } = require("@langchain/langgraph");
-const { StructuredTool } = require("@langchain/core/tools");
-const { z } = require("zod");
 
 const Athlete = require("./models/Athlete");
 const ChecklistItem = require("./models/ChecklistItem");
@@ -37,55 +34,49 @@ mongoose
   .catch((err) => console.error("MongoDB connection error:", err));
 
 // LLM
-const llm = new ChatOllama({
-  baseUrl: OLLAMA_HOST,
-  model: OLLAMA_MODEL,
-  numCtx: 131072,
-});
+const ollama = new Ollama({ host: OLLAMA_HOST });
 
-// ─── LANGGRAPH TOOLS ────────────────────────────────────────────────────────
+// ─── LANGGRAPH TOOLS (Ollama JSON-schema format) ──────────────────────────────
 
-class GenerateMealPlanTool extends StructuredTool {
-  name = "generate_meal_plan";
-  description =
-    "Generate a 3-day carb-loading meal plan for an Ironman 70.3 athlete based on their weight and gender. Returns an array of 3 days, each with breakfast, lunch, dinner, and snacks.";
+const mealPlanToolDef = {
+  type: "function",
+  function: {
+    name: "generate_meal_plan",
+    description:
+      "Generate a 3-day carb-loading meal plan for an Ironman 70.3 athlete based on their weight and gender.",
+    parameters: {
+      type: "object",
+      properties: {
+        weight: { type: "number", description: "Athlete weight in pounds" },
+        gender: {
+          type: "string",
+          enum: ["male", "female", "prefer-not-to-say"],
+          description: "Athlete gender",
+        },
+        raceLocation: { type: "string", description: "Race location for context" },
+      },
+      required: ["weight", "gender", "raceLocation"],
+    },
+  },
+};
 
-  schema = z.object({
-    weight: z.number().describe("Athlete weight in pounds"),
-    gender: z.enum(["male", "female", "prefer-not-to-say"]).describe("Athlete gender"),
-    raceLocation: z.string().describe("Race location for context"),
-  });
-
-  async _call({ weight, gender, raceLocation }) {
-    return JSON.stringify({
-      weight,
-      gender,
-      raceLocation,
-      requested: "3-day carb loading meal plan",
-    });
-  }
-}
-
-class GenerateRemindersTool extends StructuredTool {
-  name = "generate_reminders";
-  description =
-    "Generate a timeline of race preparation reminders for an Ironman 70.3 athlete. Returns an array of reminder objects with title, message, category, daysBeforeRace, and priority.";
-
-  schema = z.object({
-    daysUntilRace: z.number().describe("Number of days until the race"),
-    raceLocation: z.string().describe("Race location"),
-    athleteName: z.string().describe("Athlete name"),
-  });
-
-  async _call({ daysUntilRace, raceLocation, athleteName }) {
-    return JSON.stringify({
-      daysUntilRace,
-      raceLocation,
-      athleteName,
-      requested: "race preparation reminder timeline",
-    });
-  }
-}
+const remindersToolDef = {
+  type: "function",
+  function: {
+    name: "generate_reminders",
+    description:
+      "Generate a timeline of race preparation reminders for an Ironman 70.3 athlete.",
+    parameters: {
+      type: "object",
+      properties: {
+        daysUntilRace: { type: "number", description: "Number of days until the race" },
+        raceLocation: { type: "string", description: "Race location" },
+        athleteName: { type: "string", description: "Athlete name" },
+      },
+      required: ["daysUntilRace", "raceLocation", "athleteName"],
+    },
+  },
+};
 
 // ─── GRAPH STATE ─────────────────────────────────────────────────────────────
 
@@ -102,18 +93,11 @@ const graphStateData = {
     value: (_x, y) => y,
     default: () => null,
   },
-  messages: {
-    value: (_x, y) => _x.concat(y),
-    default: () => [],
-  },
   toolCalls: {
     value: (_x, y) => _x.concat(y),
     default: () => [],
   },
 };
-
-const mealPlanTool = new GenerateMealPlanTool();
-const remindersTool = new GenerateRemindersTool();
 
 // ─── GRAPH NODES ─────────────────────────────────────────────────────────────
 
@@ -130,43 +114,47 @@ async function analyzeAthleteNode(state) {
     return {};
   }
 
-  const systemMsg = new SystemMessage(
-    `You are a triathlon race preparation assistant for Ironman 70.3 athletes.
-Your job is to call the appropriate tools to generate personalized race preparation content.
-Always call the tools — do not generate the content yourself as text.
-Call generate_meal_plan if a meal plan is needed.
-Call generate_reminders if reminders are needed.`
-  );
+  const tools = [];
+  if (needsMealPlan) tools.push(mealPlanToolDef);
+  if (needsReminders) tools.push(remindersToolDef);
 
-  const userMsg = new HumanMessage(
-    `Athlete: ${athlete.name}, ${athlete.weight} lbs, ${athlete.gender}.
+  const messages = [
+    {
+      role: "system",
+      content: `You are a triathlon race preparation assistant for Ironman 70.3 athletes.
+Always call the appropriate tools — do not generate content yourself as text.
+Call generate_meal_plan if a meal plan is needed.
+Call generate_reminders if reminders are needed.`,
+    },
+    {
+      role: "user",
+      content: `Athlete: ${athlete.name}, ${athlete.weight} lbs, ${athlete.gender}.
 Race: ${athlete.raceLocation} in ${daysUntilRace} days.
 ${needsMealPlan ? "Generate a 3-day carb-loading meal plan." : ""}
-${needsReminders ? "Generate race preparation reminders timeline." : ""}`
-  );
+${needsReminders ? "Generate race preparation reminders timeline." : ""}`,
+    },
+  ];
 
-  const tools = [];
-  if (needsMealPlan) tools.push(mealPlanTool);
-  if (needsReminders) tools.push(remindersTool);
-
-  const llmWithTools = llm.bindTools(tools);
-  const response = await llmWithTools.invoke([systemMsg, userMsg, ...state.messages]);
-  console.log("analyzeAthleteNode LLM response:", response);
+  const response = await ollama.chat({ model: OLLAMA_MODEL, messages, tools, stream: false });
+  console.log("analyzeAthleteNode response:", response.message);
 
   return {
-    toolCalls: response.tool_calls || [],
-    messages: [response],
+    toolCalls: response.message.tool_calls || [],
   };
 }
 
 async function generateMealPlanNode(state) {
-  const toolCall = state.toolCalls.find((tc) => tc.name === "generate_meal_plan");
+  const toolCall = state.toolCalls.find((tc) => tc.function.name === "generate_meal_plan");
   console.log("generateMealPlanNode tool call:", toolCall);
 
-  const toolResult = await mealPlanTool.invoke(toolCall.args);
+  const args = toolCall.function.arguments;
 
-  const systemMsg = new SystemMessage(
-    `You are a sports nutritionist specializing in triathlon. Generate a detailed 3-day carb-loading meal plan.
+  const response = await ollama.chat({
+    model: OLLAMA_MODEL,
+    messages: [
+      {
+        role: "system",
+        content: `You are a sports nutritionist specializing in triathlon. Generate a detailed 3-day carb-loading meal plan.
 Respond ONLY with a valid JSON object in this exact structure:
 {
   "days": [
@@ -184,46 +172,43 @@ Respond ONLY with a valid JSON object in this exact structure:
   ],
   "notes": "..."
 }
-Do not include any text outside the JSON.`
-  );
-
-  const userMsg = new HumanMessage(
-    `Generate a 3-day carb-loading meal plan for: ${JSON.stringify(toolCall.args)}`
-  );
-
-  const toolMsg = new ToolMessage({
-    content: toolResult,
-    name: toolCall.name,
-    tool_call_id: toolCall.id,
+Do not include any text outside the JSON.`,
+      },
+      {
+        role: "user",
+        content: `Generate a 3-day carb-loading meal plan for: ${JSON.stringify(args)}`,
+      },
+    ],
+    stream: false,
+    format: "json",
   });
 
-  const response = await llm.invoke([systemMsg, toolMsg, userMsg]);
-  console.log("generateMealPlanNode LLM response:", response.content);
+  console.log("generateMealPlanNode response:", response.message.content);
 
   let parsed = null;
   try {
-    const jsonMatch = response.content.match(/\{[\s\S]*\}/);
-    parsed = JSON.parse(jsonMatch ? jsonMatch[0] : response.content);
+    parsed = JSON.parse(response.message.content);
   } catch (e) {
     console.error("Failed to parse meal plan JSON:", e);
     parsed = { days: [], notes: "Could not generate meal plan." };
   }
 
-  return {
-    mealPlan: parsed,
-    messages: [toolMsg, response],
-  };
+  return { mealPlan: parsed };
 }
 
 async function generateRemindersNode(state) {
-  const toolCall = state.toolCalls.find((tc) => tc.name === "generate_reminders");
+  const toolCall = state.toolCalls.find((tc) => tc.function.name === "generate_reminders");
   console.log("generateRemindersNode tool call:", toolCall);
 
-  const toolResult = await remindersTool.invoke(toolCall.args);
+  const args = toolCall.function.arguments;
 
-  const systemMsg = new SystemMessage(
-    `You are a triathlon race director. Generate a timeline of preparation reminders for an Ironman 70.3 athlete.
-Respond ONLY with a valid JSON array of reminder objects with this exact structure:
+  const response = await ollama.chat({
+    model: OLLAMA_MODEL,
+    messages: [
+      {
+        role: "system",
+        content: `You are a triathlon race director. Generate a timeline of preparation reminders for an Ironman 70.3 athlete.
+Respond ONLY with a valid JSON array of reminder objects:
 [
   {
     "title": "...",
@@ -233,35 +218,29 @@ Respond ONLY with a valid JSON array of reminder objects with this exact structu
     "priority": "high|medium|low"
   }
 ]
-Include 10-15 reminders spanning from 90 days out to race day. Do not include any text outside the JSON array.`
-  );
-
-  const userMsg = new HumanMessage(
-    `Generate reminders for: ${JSON.stringify(toolCall.args)}`
-  );
-
-  const toolMsg = new ToolMessage({
-    content: toolResult,
-    name: toolCall.name,
-    tool_call_id: toolCall.id,
+Include 10-15 reminders spanning from 90 days out to race day. Do not include any text outside the JSON array.`,
+      },
+      {
+        role: "user",
+        content: `Generate reminders for: ${JSON.stringify(args)}`,
+      },
+    ],
+    stream: false,
+    format: "json",
   });
 
-  const response = await llm.invoke([systemMsg, toolMsg, userMsg]);
-  console.log("generateRemindersNode LLM response:", response.content);
+  console.log("generateRemindersNode response:", response.message.content);
 
   let parsed = null;
   try {
-    const jsonMatch = response.content.match(/\[[\s\S]*\]/);
-    parsed = JSON.parse(jsonMatch ? jsonMatch[0] : response.content);
+    const jsonMatch = response.message.content.match(/\[[\s\S]*\]/);
+    parsed = JSON.parse(jsonMatch ? jsonMatch[0] : response.message.content);
   } catch (e) {
     console.error("Failed to parse reminders JSON:", e);
     parsed = [];
   }
 
-  return {
-    reminders: parsed,
-    messages: [toolMsg, response],
-  };
+  return { reminders: parsed };
 }
 
 async function submitResultsNode(_state) {
@@ -279,16 +258,16 @@ function routingFunction(state) {
 
   const pendingToolCalls = state.toolCalls.filter(
     (tc) =>
-      (tc.name === "generate_meal_plan" && !state.mealPlan) ||
-      (tc.name === "generate_reminders" && !state.reminders)
+      (tc.function.name === "generate_meal_plan" && !state.mealPlan) ||
+      (tc.function.name === "generate_reminders" && !state.reminders)
   );
 
   if (pendingToolCalls.length > 0) {
-    if (pendingToolCalls[0].name === "generate_meal_plan") {
+    if (pendingToolCalls[0].function.name === "generate_meal_plan") {
       console.log("Routing -> generateMealPlan");
       return "generateMealPlan";
     }
-    if (pendingToolCalls[0].name === "generate_reminders") {
+    if (pendingToolCalls[0].function.name === "generate_reminders") {
       console.log("Routing -> generateReminders");
       return "generateReminders";
     }
