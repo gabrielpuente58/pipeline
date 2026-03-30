@@ -3,434 +3,605 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
-
+const { google } = require("googleapis");
 const { Ollama } = require("ollama");
 const { StateGraph, START, END } = require("@langchain/langgraph");
 
-const Athlete = require("./models/Athlete");
-const ChecklistItem = require("./models/ChecklistItem");
-const MealPlan = require("./models/MealPlan");
-const Reminder = require("./models/Reminder");
-const { seedChecklist } = require("./seed");
+const Application = require("./models/Application");
+const Contact = require("./models/Contact");
+const FollowUp = require("./models/FollowUp");
+const ActivityLog = require("./models/ActivityLog");
+const GmailToken = require("./models/GmailToken");
+const { seedApplications } = require("./seed");
 
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017";
-const DB_NAME = process.env.DB_NAME || "race_day_planner";
+const DB_NAME = process.env.DB_NAME || "pipeline";
 const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://golem:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.1";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gpt-oss:20b";
 const PORT = process.env.PORT || 8080;
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const GOOGLE_REDIRECT_URI =
+  process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/auth/gmail/callback`;
 
-// Express
+// ─── EXPRESS ──────────────────────────────────────────────────────────────────
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MongoDB
+// ─── MONGODB ──────────────────────────────────────────────────────────────────
+
 mongoose
   .connect(`${MONGODB_URI}/${DB_NAME}`)
   .then(async () => {
     console.log("Connected to MongoDB");
-    await seedChecklist(ChecklistItem);
+    await seedApplications(Application);
   })
   .catch((err) => console.error("MongoDB connection error:", err));
 
-// LLM
+// ─── OLLAMA ───────────────────────────────────────────────────────────────────
+
 const ollama = new Ollama({ host: OLLAMA_HOST });
 
-// ─── LANGGRAPH TOOLS (Ollama JSON-schema format) ──────────────────────────────
+// ─── GMAIL OAUTH ──────────────────────────────────────────────────────────────
 
-const mealPlanToolDef = {
+function getOAuth2Client() {
+  return new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
+}
+
+async function getGmailClient() {
+  const tokenDoc = await GmailToken.findOne().sort({ createdAt: -1 });
+  if (!tokenDoc) throw new Error("Gmail not connected");
+  const auth = getOAuth2Client();
+  auth.setCredentials({
+    access_token: tokenDoc.access_token,
+    refresh_token: tokenDoc.refresh_token,
+    expiry_date: tokenDoc.expiry_date,
+  });
+  return google.gmail({ version: "v1", auth });
+}
+
+// ─── LANGGRAPH TOOLS ──────────────────────────────────────────────────────────
+
+const classifyEmailToolDef = {
   type: "function",
   function: {
-    name: "generate_meal_plan",
+    name: "classify_email_thread",
     description:
-      "Generate a 3-day carb-loading meal plan for an Ironman 70.3 athlete based on their weight and gender.",
+      "Classify a job application email thread as interview_request, rejection, offer, or no_response.",
     parameters: {
       type: "object",
       properties: {
-        weight: { type: "number", description: "Athlete weight in pounds" },
-        gender: {
+        classification: {
           type: "string",
-          enum: ["male", "female", "prefer-not-to-say"],
-          description: "Athlete gender",
+          enum: ["interview_request", "rejection", "offer", "no_response"],
+          description: "The classification of the email thread",
         },
-        raceLocation: { type: "string", description: "Race location for context" },
+        confidence: {
+          type: "string",
+          enum: ["high", "medium", "low"],
+        },
+        summary: {
+          type: "string",
+          description: "One-sentence summary of what the email says",
+        },
       },
-      required: ["weight", "gender", "raceLocation"],
+      required: ["classification", "confidence", "summary"],
     },
   },
 };
 
-const remindersToolDef = {
+const draftFollowUpToolDef = {
   type: "function",
   function: {
-    name: "generate_reminders",
-    description:
-      "Generate a timeline of race preparation reminders for an Ironman 70.3 athlete.",
+    name: "draft_follow_up_email",
+    description: "Draft a professional follow-up email for a silent job application.",
     parameters: {
       type: "object",
       properties: {
-        daysUntilRace: { type: "number", description: "Number of days until the race" },
-        raceLocation: { type: "string", description: "Race location" },
-        athleteName: { type: "string", description: "Athlete name" },
+        subject: { type: "string", description: "Email subject line" },
+        body: { type: "string", description: "Full email body" },
       },
-      required: ["daysUntilRace", "raceLocation", "athleteName"],
+      required: ["subject", "body"],
     },
   },
 };
 
-// ─── GRAPH STATE ─────────────────────────────────────────────────────────────
+// ─── GRAPH STATE ──────────────────────────────────────────────────────────────
 
 const graphStateData = {
-  athlete: {
-    value: (_x, y) => y,
-    default: () => null,
-  },
-  mealPlan: {
-    value: (_x, y) => y,
-    default: () => null,
-  },
-  reminders: {
-    value: (_x, y) => y,
-    default: () => null,
-  },
-  toolCalls: {
-    value: (_x, y) => _x.concat(y),
-    default: () => [],
-  },
+  applications: { value: (_x, y) => y, default: () => [] },
+  emailThreads: { value: (_x, y) => y, default: () => [] },
+  classifications: { value: (_x, y) => _x.concat(y), default: () => [] },
+  silentApps: { value: (_x, y) => y, default: () => [] },
+  followUpDrafts: { value: (_x, y) => _x.concat(y), default: () => [] },
 };
 
-// ─── GRAPH NODES ─────────────────────────────────────────────────────────────
+// ─── GRAPH NODES ──────────────────────────────────────────────────────────────
 
-async function analyzeAthleteNode(state) {
-  const { athlete, mealPlan, reminders } = state;
-  const daysUntilRace = Math.ceil(
-    (new Date(athlete.raceDate) - new Date()) / (1000 * 60 * 60 * 24)
-  );
+async function scanEmailsNode(state) {
+  console.log("scanEmailsNode: scanning Gmail...");
+  const threads = [];
 
-  const needsMealPlan = !mealPlan;
-  const needsReminders = !reminders;
-
-  if (!needsMealPlan && !needsReminders) {
-    return {};
+  let gmail;
+  try {
+    gmail = await getGmailClient();
+  } catch {
+    console.log("Gmail not connected — skipping email scan");
+    return { emailThreads: [] };
   }
 
-  const tools = [];
-  if (needsMealPlan) tools.push(mealPlanToolDef);
-  if (needsReminders) tools.push(remindersToolDef);
+  for (const app of state.applications) {
+    try {
+      const q = `"${app.company}" OR subject:"${app.position}"`;
+      const res = await gmail.users.threads.list({ userId: "me", q, maxResults: 3 });
+      if (!res.data.threads) continue;
 
-  const messages = [
-    {
-      role: "system",
-      content: `You are a triathlon race preparation assistant for Ironman 70.3 athletes.
-Always call the appropriate tools — do not generate content yourself as text.
-Call generate_meal_plan if a meal plan is needed.
-Call generate_reminders if reminders are needed.`,
-    },
-    {
-      role: "user",
-      content: `Athlete: ${athlete.name}, ${athlete.weight} lbs, ${athlete.gender}.
-Race: ${athlete.raceLocation} in ${daysUntilRace} days.
-${needsMealPlan ? "Generate a 3-day carb-loading meal plan." : ""}
-${needsReminders ? "Generate race preparation reminders timeline." : ""}`,
-    },
-  ];
+      for (const t of res.data.threads) {
+        const data = await gmail.users.threads.get({ userId: "me", id: t.id });
+        const content = (data.data.messages || [])
+          .map((m) => {
+            const subject = m.payload.headers?.find((h) => h.name === "Subject")?.value || "";
+            const from = m.payload.headers?.find((h) => h.name === "From")?.value || "";
+            return `From: ${from}\nSubject: ${subject}\nSnippet: ${m.snippet}`;
+          })
+          .join("\n---\n");
 
-  const response = await ollama.chat({ model: OLLAMA_MODEL, messages, tools, stream: false });
-  console.log("analyzeAthleteNode response:", response.message);
-
-  return {
-    toolCalls: response.message.tool_calls || [],
-  };
-}
-
-async function generateMealPlanNode(state) {
-  const toolCall = state.toolCalls.find((tc) => tc.function.name === "generate_meal_plan");
-  console.log("generateMealPlanNode tool call:", toolCall);
-
-  const args = toolCall.function.arguments;
-
-  const response = await ollama.chat({
-    model: OLLAMA_MODEL,
-    messages: [
-      {
-        role: "system",
-        content: `You are a sports nutritionist specializing in triathlon. Generate a detailed 3-day carb-loading meal plan.
-Respond ONLY with a valid JSON object in this exact structure:
-{
-  "days": [
-    {
-      "label": "3 Days Before Race",
-      "meals": [
-        { "time": "Breakfast", "name": "...", "description": "...", "carbs": 80, "calories": 450 },
-        { "time": "Lunch", "name": "...", "description": "...", "carbs": 90, "calories": 550 },
-        { "time": "Dinner", "name": "...", "description": "...", "carbs": 100, "calories": 600 },
-        { "time": "Snack", "name": "...", "description": "...", "carbs": 40, "calories": 200 }
-      ],
-      "totalCarbs": 310,
-      "totalCalories": 1800
+        threads.push({
+          applicationId: app._id.toString(),
+          company: app.company,
+          position: app.position,
+          threadId: t.id,
+          content,
+        });
+      }
+    } catch (err) {
+      console.error(`Gmail scan error for ${app.company}:`, err.message);
     }
-  ],
-  "notes": "..."
+  }
+
+  console.log(`scanEmailsNode: found ${threads.length} threads`);
+  return { emailThreads: threads };
 }
-Do not include any text outside the JSON.`,
-      },
-      {
-        role: "user",
-        content: `Generate a 3-day carb-loading meal plan for: ${JSON.stringify(args)}`,
-      },
-    ],
-    stream: false,
-    format: "json",
+
+async function classifyEmailsNode(state) {
+  console.log("classifyEmailsNode: classifying...");
+  const classifications = [];
+
+  for (const thread of state.emailThreads) {
+    try {
+      const response = await ollama.chat({
+        model: OLLAMA_MODEL,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a job search assistant. Classify the email thread for the given job application by calling classify_email_thread.",
+          },
+          {
+            role: "user",
+            content: `Company: ${thread.company}\nPosition: ${thread.position}\n\nThread:\n${thread.content}`,
+          },
+        ],
+        tools: [classifyEmailToolDef],
+        stream: false,
+      });
+
+      const tc = response.message.tool_calls?.[0];
+      if (tc?.function.name === "classify_email_thread") {
+        classifications.push({
+          applicationId: thread.applicationId,
+          company: thread.company,
+          ...tc.function.arguments,
+        });
+      }
+    } catch (err) {
+      console.error(`Classify error for ${thread.company}:`, err.message);
+    }
+  }
+
+  console.log(`classifyEmailsNode: classified ${classifications.length}`);
+  return { classifications };
+}
+
+async function checkSilentNode(state) {
+  console.log("checkSilentNode: finding silent apps...");
+  const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+  const silent = state.applications.filter((app) => {
+    if (["offer", "rejected", "ghosted"].includes(app.status)) return false;
+    return new Date(app.updatedAt) < cutoff;
   });
 
-  console.log("generateMealPlanNode response:", response.message.content);
-
-  let parsed = null;
-  try {
-    parsed = JSON.parse(response.message.content);
-  } catch (e) {
-    console.error("Failed to parse meal plan JSON:", e);
-    parsed = { days: [], notes: "Could not generate meal plan." };
-  }
-
-  return { mealPlan: parsed };
+  console.log(`checkSilentNode: ${silent.length} silent apps`);
+  return { silentApps: silent };
 }
 
-async function generateRemindersNode(state) {
-  const toolCall = state.toolCalls.find((tc) => tc.function.name === "generate_reminders");
-  console.log("generateRemindersNode tool call:", toolCall);
+async function draftFollowUpsNode(state) {
+  console.log("draftFollowUpsNode: drafting follow-ups...");
+  const drafts = [];
 
-  const args = toolCall.function.arguments;
+  for (const app of state.silentApps) {
+    try {
+      const daysSilent = Math.floor(
+        (Date.now() - new Date(app.updatedAt)) / (1000 * 60 * 60 * 24)
+      );
 
-  const response = await ollama.chat({
-    model: OLLAMA_MODEL,
-    messages: [
-      {
-        role: "system",
-        content: `You are a triathlon race director. Generate a timeline of preparation reminders for an Ironman 70.3 athlete.
-Respond ONLY with a valid JSON array of reminder objects:
-[
-  {
-    "title": "...",
-    "message": "...",
-    "category": "purchase|maintenance|training|nutrition|logistics",
-    "daysBeforeRace": 90,
-    "priority": "high|medium|low"
+      const response = await ollama.chat({
+        model: OLLAMA_MODEL,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a career coach. Draft a concise, professional follow-up email by calling draft_follow_up_email.",
+          },
+          {
+            role: "user",
+            content: `Company: ${app.company}\nPosition: ${app.position}\nApplied: ${daysSilent} days ago\nContact: ${app.contactName || "Hiring Manager"}\nStatus: ${app.status}`,
+          },
+        ],
+        tools: [draftFollowUpToolDef],
+        stream: false,
+      });
+
+      const tc = response.message.tool_calls?.[0];
+      if (tc?.function.name === "draft_follow_up_email") {
+        drafts.push({
+          applicationId: app._id.toString(),
+          ...tc.function.arguments,
+        });
+      }
+    } catch (err) {
+      console.error(`Draft error for ${app.company}:`, err.message);
+    }
   }
-]
-Include 10-15 reminders spanning from 90 days out to race day. Do not include any text outside the JSON array.`,
-      },
-      {
-        role: "user",
-        content: `Generate reminders for: ${JSON.stringify(args)}`,
-      },
-    ],
-    stream: false,
-    format: "json",
+
+  console.log(`draftFollowUpsNode: created ${drafts.length} drafts`);
+  return { followUpDrafts: drafts };
+}
+
+async function submitResultsNode(state) {
+  console.log("submitResultsNode: persisting...");
+
+  const statusMap = {
+    interview_request: "interviewing",
+    offer: "offer",
+    rejection: "rejected",
+    no_response: null,
+  };
+
+  // Apply classifications → update statuses + log
+  for (const cls of state.classifications) {
+    const newStatus = statusMap[cls.classification];
+    if (newStatus) {
+      const app = await Application.findById(cls.applicationId);
+      if (app && app.status !== newStatus) {
+        const oldStatus = app.status;
+        app.status = newStatus;
+        await app.save();
+        await ActivityLog.create({
+          applicationId: app._id,
+          event: "status-change",
+          description: `Status changed from ${oldStatus} → ${newStatus} (AI: ${cls.summary})`,
+        });
+      }
+    }
+    await ActivityLog.create({
+      applicationId: cls.applicationId,
+      event: "email-received",
+      description: `Email from ${cls.company}: ${cls.summary}`,
+    });
+  }
+
+  // Save AI follow-up drafts
+  for (const draft of state.followUpDrafts) {
+    await FollowUp.create({
+      applicationId: draft.applicationId,
+      subject: draft.subject,
+      body: draft.body,
+      draftedByAI: true,
+    });
+  }
+
+  // Log the scan itself
+  await ActivityLog.create({
+    event: "ai-scan",
+    description: `Inbox scan complete — ${state.emailThreads.length} threads, ${state.classifications.length} classified, ${state.followUpDrafts.length} follow-ups drafted`,
   });
 
-  console.log("generateRemindersNode response:", response.message.content);
-
-  let parsed = null;
-  try {
-    const jsonMatch = response.message.content.match(/\[[\s\S]*\]/);
-    parsed = JSON.parse(jsonMatch ? jsonMatch[0] : response.message.content);
-  } catch (e) {
-    console.error("Failed to parse reminders JSON:", e);
-    parsed = [];
-  }
-
-  return { reminders: parsed };
-}
-
-async function submitResultsNode(_state) {
-  console.log("submitResultsNode: persisting results");
   return {};
 }
 
-// ─── ROUTING FUNCTION ─────────────────────────────────────────────────────────
+// ─── ROUTING ─────────────────────────────────────────────────────────────────
 
 function routingFunction(state) {
-  if (state.mealPlan && state.reminders) {
-    console.log("Routing -> submitResults");
-    return "submitResults";
+  if (state.silentApps.length > 0) {
+    console.log("Routing -> draftFollowUps");
+    return "draftFollowUps";
   }
-
-  const pendingToolCalls = state.toolCalls.filter(
-    (tc) =>
-      (tc.function.name === "generate_meal_plan" && !state.mealPlan) ||
-      (tc.function.name === "generate_reminders" && !state.reminders)
-  );
-
-  if (pendingToolCalls.length > 0) {
-    if (pendingToolCalls[0].function.name === "generate_meal_plan") {
-      console.log("Routing -> generateMealPlan");
-      return "generateMealPlan";
-    }
-    if (pendingToolCalls[0].function.name === "generate_reminders") {
-      console.log("Routing -> generateReminders");
-      return "generateReminders";
-    }
-  }
-
-  console.log("Routing -> analyzeAthlete (retry)");
-  return "analyzeAthlete";
+  console.log("Routing -> submitResults");
+  return "submitResults";
 }
 
-// ─── BUILD GRAPH ─────────────────────────────────────────────────────────────
+// ─── BUILD GRAPH ──────────────────────────────────────────────────────────────
 
 const workflow = new StateGraph({ channels: graphStateData });
-
-workflow.addNode("analyzeAthlete", analyzeAthleteNode);
-workflow.addNode("generateMealPlan", generateMealPlanNode);
-workflow.addNode("generateReminders", generateRemindersNode);
+workflow.addNode("scanEmails", scanEmailsNode);
+workflow.addNode("classifyEmails", classifyEmailsNode);
+workflow.addNode("checkSilent", checkSilentNode);
+workflow.addNode("draftFollowUps", draftFollowUpsNode);
 workflow.addNode("submitResults", submitResultsNode);
 
-workflow.addEdge(START, "analyzeAthlete");
-workflow.addConditionalEdges("analyzeAthlete", routingFunction, [
-  "generateMealPlan",
-  "generateReminders",
-  "submitResults",
-]);
-workflow.addEdge("generateMealPlan", "analyzeAthlete");
-workflow.addEdge("generateReminders", "analyzeAthlete");
+workflow.addEdge(START, "scanEmails");
+workflow.addEdge("scanEmails", "classifyEmails");
+workflow.addEdge("classifyEmails", "checkSilent");
+workflow.addConditionalEdges("checkSilent", routingFunction, ["draftFollowUps", "submitResults"]);
+workflow.addEdge("draftFollowUps", "submitResults");
 workflow.addEdge("submitResults", END);
 
 const graph = workflow.compile();
 
-// ─── REST ROUTES ─────────────────────────────────────────────────────────────
+// ─── REST ROUTES: APPLICATIONS ────────────────────────────────────────────────
 
-// POST /athlete — create athlete profile
-app.post("/athlete", async (req, res) => {
+app.get("/applications", async (req, res) => {
   try {
-    const existing = await Athlete.findOne();
-    if (existing) {
-      return res.status(409).json({ error: "Athlete profile already exists. Use PUT to update." });
-    }
-    const athlete = await Athlete.create(req.body);
-    res.status(201).json(athlete);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// GET /athlete — get athlete profile
-app.get("/athlete", async (_req, res) => {
-  try {
-    const athlete = await Athlete.findOne();
-    if (!athlete) return res.status(404).json({ error: "No athlete profile found" });
-    res.json(athlete);
+    const filter = req.query.status ? { status: req.query.status } : {};
+    const applications = await Application.find(filter).sort({ appliedDate: -1 });
+    res.json(applications);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /athlete/:id — update athlete profile
-app.put("/athlete/:id", async (req, res) => {
+app.post("/applications", async (req, res) => {
   try {
-    const athlete = await Athlete.findByIdAndUpdate(req.params.id, req.body, {
+    const application = await Application.create(req.body);
+    await ActivityLog.create({
+      applicationId: application._id,
+      event: "created",
+      description: `Applied to ${application.position} at ${application.company}`,
+    });
+    res.status(201).json(application);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put("/applications/:id", async (req, res) => {
+  try {
+    const prev = await Application.findById(req.params.id);
+    if (!prev) return res.status(404).json({ error: "Application not found" });
+
+    const updated = await Application.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true,
     });
-    if (!athlete) return res.status(404).json({ error: "Athlete not found" });
-    res.json(athlete);
+
+    if (prev.status !== updated.status) {
+      await ActivityLog.create({
+        applicationId: updated._id,
+        event: "status-change",
+        description: `Status changed from ${prev.status} → ${updated.status}`,
+      });
+    } else {
+      await ActivityLog.create({
+        applicationId: updated._id,
+        event: "updated",
+        description: `Updated ${updated.company} — ${updated.position}`,
+      });
+    }
+
+    res.json(updated);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
-// GET /checklist — get all checklist items
-app.get("/checklist", async (_req, res) => {
+app.delete("/applications/:id", async (req, res) => {
   try {
-    const items = await ChecklistItem.find().sort({ category: 1, name: 1 });
-    res.json(items);
+    const app_ = await Application.findByIdAndDelete(req.params.id);
+    if (!app_) return res.status(404).json({ error: "Application not found" });
+    await FollowUp.deleteMany({ applicationId: req.params.id });
+    await ActivityLog.deleteMany({ applicationId: req.params.id });
+    res.json({ message: "Application deleted" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /checklist/:id — toggle checked or purchased
-app.put("/checklist/:id", async (req, res) => {
+// ─── REST ROUTES: CONTACTS ────────────────────────────────────────────────────
+
+app.get("/contacts", async (_req, res) => {
   try {
-    const item = await ChecklistItem.findByIdAndUpdate(req.params.id, req.body, {
+    const contacts = await Contact.find().sort({ company: 1, name: 1 });
+    res.json(contacts);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/contacts", async (req, res) => {
+  try {
+    const contact = await Contact.create(req.body);
+    res.status(201).json(contact);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put("/contacts/:id", async (req, res) => {
+  try {
+    const contact = await Contact.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true,
     });
-    if (!item) return res.status(404).json({ error: "Checklist item not found" });
-    res.json(item);
+    if (!contact) return res.status(404).json({ error: "Contact not found" });
+    res.json(contact);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
-// DELETE /checklist/:id — delete a checklist item
-app.delete("/checklist/:id", async (req, res) => {
+app.delete("/contacts/:id", async (req, res) => {
   try {
-    const item = await ChecklistItem.findByIdAndDelete(req.params.id);
-    if (!item) return res.status(404).json({ error: "Checklist item not found" });
-    res.json({ message: "Item deleted" });
+    const contact = await Contact.findByIdAndDelete(req.params.id);
+    if (!contact) return res.status(404).json({ error: "Contact not found" });
+    res.json({ message: "Contact deleted" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /generate-plan — run AI agent to generate meal plan + reminders
-app.post("/generate-plan", async (req, res) => {
+// ─── REST ROUTES: FOLLOW-UPS ──────────────────────────────────────────────────
+
+app.get("/follow-ups", async (_req, res) => {
   try {
-    const athlete = await Athlete.findOne();
-    if (!athlete) {
-      return res.status(400).json({ error: "No athlete profile found. Create one first." });
+    const followUps = await FollowUp.find()
+      .populate("applicationId", "company position status")
+      .sort({ createdAt: -1 });
+    res.json(followUps);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/follow-ups", async (req, res) => {
+  try {
+    const followUp = await FollowUp.create(req.body);
+    res.status(201).json(followUp);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put("/follow-ups/:id", async (req, res) => {
+  try {
+    const followUp = await FollowUp.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+      runValidators: true,
+    });
+    if (!followUp) return res.status(404).json({ error: "Follow-up not found" });
+
+    if (req.body.sent === true) {
+      await ActivityLog.create({
+        applicationId: followUp.applicationId,
+        event: "follow-up-sent",
+        description: `Follow-up sent: "${followUp.subject}"`,
+      });
     }
 
-    const state = await graph.invoke({ athlete });
-    console.log("Final graph state:", state.mealPlan ? "meal plan ok" : "no meal plan", state.reminders ? "reminders ok" : "no reminders");
+    res.json(followUp);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 
-    // Persist meal plan
-    await MealPlan.deleteMany({ athleteId: athlete._id });
-    const mealPlan = await MealPlan.create({
-      athleteId: athlete._id,
-      days: state.mealPlan?.days || [],
-      notes: state.mealPlan?.notes || "",
+app.delete("/follow-ups/:id", async (req, res) => {
+  try {
+    const followUp = await FollowUp.findByIdAndDelete(req.params.id);
+    if (!followUp) return res.status(404).json({ error: "Follow-up not found" });
+    res.json({ message: "Follow-up deleted" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── REST ROUTES: ACTIVITY LOGS ───────────────────────────────────────────────
+
+app.get("/activity-logs", async (req, res) => {
+  try {
+    const filter = req.query.applicationId ? { applicationId: req.query.applicationId } : {};
+    const logs = await ActivityLog.find(filter)
+      .sort({ timestamp: -1 })
+      .limit(50);
+    res.json(logs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/activity-logs/:id", async (req, res) => {
+  try {
+    const log = await ActivityLog.findByIdAndDelete(req.params.id);
+    if (!log) return res.status(404).json({ error: "Log not found" });
+    res.json({ message: "Log deleted" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── GMAIL AUTH ROUTES ────────────────────────────────────────────────────────
+
+app.get("/auth/gmail", (_req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    return res.status(500).json({ error: "Google OAuth credentials not configured" });
+  }
+  const auth = getOAuth2Client();
+  const url = auth.generateAuthUrl({
+    access_type: "offline",
+    prompt: "consent",
+    scope: ["https://www.googleapis.com/auth/gmail.readonly"],
+  });
+  res.redirect(url);
+});
+
+app.get("/auth/gmail/callback", async (req, res) => {
+  try {
+    const { code } = req.query;
+    const auth = getOAuth2Client();
+    const { tokens } = await auth.getToken(code);
+
+    await GmailToken.deleteMany({});
+    await GmailToken.create({
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expiry_date: tokens.expiry_date,
     });
 
-    // Persist reminders
-    await Reminder.deleteMany({ athleteId: athlete._id });
-    const remindersData = (state.reminders || []).map((r) => ({
-      ...r,
-      athleteId: athlete._id,
-    }));
-    const reminders = await Reminder.insertMany(remindersData);
-
-    res.json({ mealPlan, reminders });
+    res.send(`<script>window.close();</script><p>Gmail connected! You can close this window.</p>`);
   } catch (err) {
-    console.error("generate-plan error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /meal-plan — get saved meal plan
-app.get("/meal-plan", async (_req, res) => {
+app.get("/auth/gmail/status", async (_req, res) => {
   try {
-    const mealPlan = await MealPlan.findOne().sort({ createdAt: -1 });
-    if (!mealPlan) return res.status(404).json({ error: "No meal plan found" });
-    res.json(mealPlan);
+    const token = await GmailToken.findOne();
+    res.json({ connected: !!token });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /reminders — get reminders sorted by daysBeforeRace
-app.get("/reminders", async (_req, res) => {
+// ─── SCAN INBOX ───────────────────────────────────────────────────────────────
+
+app.post("/scan-inbox", async (_req, res) => {
   try {
-    const reminders = await Reminder.find().sort({ daysBeforeRace: -1 });
-    res.json(reminders);
+    const applications = await Application.find({
+      status: { $in: ["applied", "interviewing"] },
+    });
+
+    if (applications.length === 0) {
+      return res.json({ message: "No active applications to scan", results: {} });
+    }
+
+    const finalState = await graph.invoke({ applications });
+
+    res.json({
+      message: "Inbox scan complete",
+      threadsFound: finalState.emailThreads.length,
+      classified: finalState.classifications.length,
+      followUpsDrafted: finalState.followUpDrafts.length,
+    });
   } catch (err) {
+    console.error("scan-inbox error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ─── START ───────────────────────────────────────────────────────────────────
+// ─── START ────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Pipeline server running on http://localhost:${PORT}`);
 });
