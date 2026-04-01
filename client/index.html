@@ -116,6 +116,14 @@
                     <span class="material-symbols-outlined">delete</span>
                   </button>
                 </div>
+                <div v-if="app.emailSummary" class="app-card-summary">
+                  <span class="material-symbols-outlined">summarize</span>
+                  <span>{{ app.emailSummary }}</span>
+                </div>
+                <button class="card-summary-btn" @click.stop="fetchEmailSummary(app)" title="Get email summary">
+                  <span class="material-symbols-outlined">mark_email_read</span>
+                  {{ app.emailSummary ? 'Refresh' : 'Email summary' }}
+                </button>
               </div>
             </div>
           </template>

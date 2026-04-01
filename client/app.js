@@ -297,6 +297,18 @@ createApp({
       this.dragOverCol = null;
     },
 
+    async fetchEmailSummary(app) {
+      const res = await fetch(`${this.apiUrl}/applications/${app._id}/email-summary`);
+      const data = await res.json();
+      if (res.ok) {
+        const idx = this.applications.findIndex(a => a._id === app._id);
+        if (idx !== -1) this.applications[idx] = { ...this.applications[idx], emailSummary: data.summary };
+        this.notify("Summary updated");
+      } else {
+        this.notify(data.error || "Failed to fetch summary", "error");
+      }
+    },
+
     fmtDate(d) {
       return d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
     },

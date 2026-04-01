@@ -461,3 +461,24 @@ body {
 }
 .app-card-interview .material-symbols-outlined { font-size: 13px; }
 .app-card-interview.upcoming { color: #d97706; font-weight: 600; }
+
+/* ── EMAIL SUMMARY ────────────────────────────────────────────────────────── */
+
+.app-card-summary {
+  display: flex; align-items: flex-start; gap: 6px;
+  font-size: 12px; color: var(--muted); line-height: 1.5;
+  background: var(--bg); border-radius: 6px; padding: 8px 10px;
+  border: 1px solid var(--border-lt);
+}
+.app-card-summary .material-symbols-outlined { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+
+.card-summary-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: none; border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 10px;
+  font-size: 12px; font-weight: 500; color: var(--muted);
+  font-family: inherit; cursor: pointer; width: 100%;
+  justify-content: center; transition: all 0.15s;
+}
+.card-summary-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+.card-summary-btn .material-symbols-outlined { font-size: 14px; }

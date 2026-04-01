@@ -57,6 +57,7 @@ const Application = mongoose.model("Application", new mongoose.Schema({
   contactName:   String,
   contactEmail:  String,
   interviewDate: Date,
+  emailSummary:  { type: String, default: null },
 }, { timestamps: true }));
 
 const FollowUp = mongoose.model("FollowUp", new mongoose.Schema({
@@ -268,6 +269,16 @@ async function submitResultsNode(state) {
     await FollowUp.create({ applicationId: draft.applicationId, subject: draft.subject, body: draft.body, draftedByAI: true });
   }
 
+  // Build per-application email summaries from classifications and persist them
+  const summaryMap = {};
+  for (const cls of state.classifications) {
+    if (!summaryMap[cls.applicationId]) summaryMap[cls.applicationId] = [];
+    summaryMap[cls.applicationId].push(cls.summary);
+  }
+  for (const [appId, summaries] of Object.entries(summaryMap)) {
+    await Application.findByIdAndUpdate(appId, { emailSummary: summaries.join(" | ") });
+  }
+
   await ActivityLog.create({
     event: "ai-scan",
     description: `Scan complete — ${state.emailThreads.length} threads found, ${state.classifications.length} classified, ${state.followUpDrafts.length} follow-ups drafted`,
@@ -351,6 +362,48 @@ app.delete("/applications/:id", async (req, res) => {
     await FollowUp.deleteMany({ applicationId: req.params.id });
     await ActivityLog.deleteMany({ applicationId: req.params.id });
     res.json({ message: "Deleted" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get("/applications/:id/email-summary", async (req, res) => {
+  try {
+    const application = await Application.findById(req.params.id);
+    if (!application) return res.status(404).json({ error: "Not found" });
+
+    let gmail;
+    try { gmail = await getGmailClient(); }
+    catch { return res.json({ summary: application.emailSummary || "No emails found." }); }
+
+    const search = await gmail.users.threads
+      .list({ userId: "me", q: `"${application.company}" OR subject:"${application.position}"`, maxResults: 5 })
+      .catch(() => ({ data: {} }));
+
+    const threads = search.data.threads || [];
+    if (!threads.length) return res.json({ summary: "No emails found for this application." });
+
+    const contents = [];
+    for (const t of threads) {
+      const data = await gmail.users.threads.get({ userId: "me", id: t.id }).catch(() => null);
+      if (!data) continue;
+      const msgs = data.data.messages || [];
+      const latest = msgs[msgs.length - 1];
+      const subject = latest.payload.headers?.find(h => h.name === "Subject")?.value || "";
+      const from    = latest.payload.headers?.find(h => h.name === "From")?.value || "";
+      contents.push(`From: ${from} | Subject: ${subject} | ${latest.snippet}`);
+    }
+
+    const result = await ollama.chat({
+      model: OLLAMA_MODEL,
+      messages: [
+        { role: "system", content: "You are a job search assistant. Summarize the email activity for this job application in 2-3 sentences. Be concise and focus on what matters: interview requests, rejections, offers, or silence." },
+        { role: "user", content: `Company: ${application.company}\nPosition: ${application.position}\n\nEmails:\n${contents.join("\n\n")}` },
+      ],
+      stream: false,
+    }).catch(() => null);
+
+    const summary = result?.message?.content || application.emailSummary || "Could not generate summary.";
+    await Application.findByIdAndUpdate(application._id, { emailSummary: summary });
+    res.json({ summary });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
