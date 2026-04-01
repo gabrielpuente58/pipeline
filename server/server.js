@@ -48,12 +48,15 @@ mongoose
 const Application = mongoose.model("Application", new mongoose.Schema({
   company:      { type: String, required: [true, "Company is required"] },
   position:     { type: String, required: [true, "Position is required"] },
-  status:       { type: String, enum: ["applied", "interviewing", "offer", "rejected", "ghosted"], default: "applied" },
+  status:       { type: String, enum: ["saved", "applied", "interviewing", "offer", "rejected", "ghosted"], default: "applied" },
   appliedDate:  { type: Date,   required: [true, "Applied date is required"] },
-  jobUrl:       String,
-  notes:        String,
-  contactName:  String,
-  contactEmail: String,
+  location:      String,
+  salary:        String,
+  jobUrl:        String,
+  notes:         String,
+  contactName:   String,
+  contactEmail:  String,
+  interviewDate: Date,
 }, { timestamps: true }));
 
 const FollowUp = mongoose.model("FollowUp", new mongoose.Schema({
@@ -62,6 +65,8 @@ const FollowUp = mongoose.model("FollowUp", new mongoose.Schema({
   body:          { type: String, required: true },
   sent:          { type: Boolean, default: false },
   draftedByAI:   { type: Boolean, default: false },
+  scheduledDate: { type: Date, default: null },
+  isReply:       { type: Boolean, default: false },
 }, { timestamps: true }));
 
 const ActivityLog = mongoose.model("ActivityLog", new mongoose.Schema({
@@ -177,7 +182,7 @@ async function classifyEmailsNode(state) {
     const res = await ollama.chat({
       model: OLLAMA_MODEL,
       messages: [
-        { role: "system", content: "Classify this job application email thread by calling classify_email." },
+        { role: "system", content: "Classify this job application email thread by calling classify_email. You MUST use one of these exact classification values: interview_request, rejection, offer, no_response. Do not use any other values." },
         { role: "user",   content: `Company: ${thread.company}\nPosition: ${thread.position}\n\n${thread.content}` },
       ],
       tools: [classifyTool],
@@ -190,6 +195,7 @@ async function classifyEmailsNode(state) {
     }
   }
   console.log(`classifyEmails: classified ${classifications.length}`);
+  console.log("classifications:", JSON.stringify(classifications, null, 2));
   return { classifications };
 }
 
@@ -340,6 +346,104 @@ app.delete("/follow-ups/:id", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.post("/follow-ups/:id/send", async (req, res) => {
+  try {
+    const fu = await FollowUp.findById(req.params.id).populate("applicationId", "company position contactEmail");
+    if (!fu) return res.status(404).json({ error: "Not found" });
+
+    const gmail = await getGmailClient();
+    const to = fu.applicationId?.contactEmail || "";
+    if (!to) return res.status(400).json({ error: "No contact email on this application" });
+
+    const raw = Buffer.from(
+      `To: ${to}\r\nSubject: ${fu.subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${fu.body}`
+    ).toString("base64url");
+
+    await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+
+    await FollowUp.findByIdAndUpdate(fu._id, { sent: true });
+    await ActivityLog.create({ applicationId: fu.applicationId._id, event: "follow-up-sent", description: `Follow-up sent to ${to}: "${fu.subject}"` });
+
+    res.json({ message: "Sent" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /applications/:id/draft-followup — AI drafts a proactive follow-up, optionally scheduled
+app.post("/applications/:id/draft-followup", async (req, res) => {
+  try {
+    const app = await Application.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: "Not found" });
+
+    const days = Math.floor((Date.now() - new Date(app.updatedAt)) / 86400000);
+    const result = await ollama.chat({
+      model: OLLAMA_MODEL,
+      messages: [
+        { role: "system", content: "Draft a professional follow-up email by calling draft_follow_up." },
+        { role: "user",   content: `Company: ${app.company}\nPosition: ${app.position}\nApplied ${days} days ago\nContact: ${app.contactName || "Hiring Manager"}` },
+      ],
+      tools: [draftTool],
+      stream: false,
+    }).catch(() => null);
+
+    const tc = result?.message.tool_calls?.[0];
+    if (!tc || tc.function.name !== "draft_follow_up") return res.status(500).json({ error: "AI failed to draft follow-up" });
+
+    const fu = await FollowUp.create({
+      applicationId: app._id,
+      subject: tc.function.arguments.subject,
+      body: tc.function.arguments.body,
+      draftedByAI: true,
+      scheduledDate: req.body.scheduledDate || null,
+    });
+    res.status(201).json(fu);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /applications/:id/draft-reply — finds latest Gmail thread and AI drafts a reply
+app.post("/applications/:id/draft-reply", async (req, res) => {
+  try {
+    const app = await Application.findById(req.params.id);
+    if (!app) return res.status(404).json({ error: "Not found" });
+
+    const gmail = await getGmailClient();
+    const search = await gmail.users.threads
+      .list({ userId: "me", q: `"${app.company}" OR subject:"${app.position}"`, maxResults: 1 })
+      .catch(() => ({ data: {} }));
+
+    const threads = search.data.threads || [];
+    if (!threads.length) return res.status(404).json({ error: `No emails found for ${app.company}` });
+
+    const thread = await gmail.users.threads.get({ userId: "me", id: threads[0].id });
+    const messages = thread.data.messages || [];
+    const latest = messages[messages.length - 1];
+    const subject = latest.payload.headers?.find((h) => h.name === "Subject")?.value || "";
+    const from    = latest.payload.headers?.find((h) => h.name === "From")?.value || "";
+    const content = `From: ${from}\nSubject: ${subject}\nMessage: ${latest.snippet}`;
+
+    const result = await ollama.chat({
+      model: OLLAMA_MODEL,
+      messages: [
+        { role: "system", content: "Draft a professional reply to this job application email by calling draft_follow_up." },
+        { role: "user",   content: `Company: ${app.company}\nPosition: ${app.position}\n\nEmail to reply to:\n${content}` },
+      ],
+      tools: [draftTool],
+      stream: false,
+    }).catch(() => null);
+
+    const tc = result?.message.tool_calls?.[0];
+    if (!tc || tc.function.name !== "draft_follow_up") return res.status(500).json({ error: "AI failed to draft reply" });
+
+    const fu = await FollowUp.create({
+      applicationId: app._id,
+      subject: tc.function.arguments.subject,
+      body: tc.function.arguments.body,
+      draftedByAI: true,
+      isReply: true,
+    });
+    res.status(201).json(fu);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── ROUTES: ACTIVITY LOG ─────────────────────────────────────────────────────
 
 app.get("/activity-logs", async (_req, res) => {
@@ -355,7 +459,7 @@ app.get("/auth/gmail", (_req, res) => {
   const url = makeOAuthClient().generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
-    scope: ["https://www.googleapis.com/auth/gmail.readonly"],
+    scope: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"],
   });
   res.redirect(url);
 });
@@ -393,6 +497,49 @@ app.post("/scan-inbox", async (_req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ─── SCHEDULED SEND JOB ──────────────────────────────────────────────────────
+
+setInterval(async () => {
+  const due = await FollowUp.find({ sent: false, scheduledDate: { $lte: new Date() } }).populate("applicationId", "company position contactEmail");
+  for (const fu of due) {
+    try {
+      const app = fu.applicationId;
+      const to = app?.contactEmail || "";
+      if (!to) continue;
+
+      // Check for recent Gmail activity — skip send if email received in last 7 days
+      let hasRecentActivity = false;
+      try {
+        const gmail = await getGmailClient();
+        const check = await gmail.users.threads.list({
+          userId: "me",
+          q: `"${app.company}" newer_than:7d`,
+          maxResults: 1,
+        });
+        hasRecentActivity = (check.data.threads || []).length > 0;
+      } catch { /* gmail unavailable, proceed with send */ }
+
+      if (hasRecentActivity) {
+        await FollowUp.findByIdAndUpdate(fu._id, { scheduledDate: null });
+        await ActivityLog.create({ applicationId: app._id, event: "follow-up-sent", description: `Skipped scheduled follow-up for ${app.company} — recent email activity detected` });
+        console.log(`Skipped scheduled follow-up for ${app.company}: recent activity`);
+        continue;
+      }
+
+      const gmail = await getGmailClient();
+      const raw = Buffer.from(
+        `To: ${to}\r\nSubject: ${fu.subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${fu.body}`
+      ).toString("base64url");
+      await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+      await FollowUp.findByIdAndUpdate(fu._id, { sent: true, scheduledDate: null });
+      await ActivityLog.create({ applicationId: app._id, event: "follow-up-sent", description: `Scheduled follow-up sent to ${to}: "${fu.subject}"` });
+      console.log(`Scheduled follow-up sent: ${fu.subject}`);
+    } catch (err) {
+      console.error(`Failed to send scheduled follow-up ${fu._id}:`, err.message);
+    }
+  }
+}, 60 * 1000); // check every minute
 
 // ─── START ────────────────────────────────────────────────────────────────────
 
