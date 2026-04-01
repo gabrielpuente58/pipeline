@@ -19,12 +19,9 @@
         </div>
 
         <nav class="sidebar-nav">
-          <button v-for="tab in tabs" :key="tab.id"
-            :class="['nav-item', { active: activeTab === tab.id }]"
-            @click="activeTab = tab.id">
-            <span class="material-symbols-outlined">{{ tab.icon }}</span>
-            {{ tab.label }}
-            <span v-if="tab.id === 'followups' && pendingCount > 0" class="nav-badge">{{ pendingCount }}</span>
+          <button :class="['nav-item', { active: activeTab === 'applications' }]" @click="activeTab = 'applications'">
+            <span class="material-symbols-outlined">work</span>
+            Applications
           </button>
         </nav>
 
@@ -159,8 +156,6 @@
                     </span>
                   </div>
                   <div class="card-actions" @click.stop>
-                    <button class="card-link" @click="draftFollowUp(app)">Follow-up</button>
-                    <button class="card-link" @click="draftReply(app)">Reply</button>
                     <button class="card-del" @click="deleteApp(app._id)" title="Delete">
                       <span class="material-symbols-outlined">delete</span>
                     </button>
@@ -174,104 +169,6 @@
           </div>
         </section>
 
-        <!-- ══ FOLLOW-UPS ══ -->
-        <section v-show="activeTab === 'followups'">
-          <div class="page-header">
-            <h1>Follow-ups</h1>
-          </div>
-
-          <div v-if="followUps.length === 0" class="empty-state">
-            <span class="material-symbols-outlined">mark_email_unread</span>
-            <p>No drafts yet. Hit <strong>Scan Inbox</strong> to auto-generate follow-ups, or click <strong>Reply</strong> on a card to draft a reply to its latest email.</p>
-          </div>
-
-          <template v-else>
-            <template v-if="replyItems.length">
-              <div class="section-label">
-                <span class="material-symbols-outlined">reply</span> Replies
-              </div>
-              <div class="fu-list">
-                <div v-for="fu in replyItems" :key="fu._id" :class="['fu-card', { sent: fu.sent }]">
-                  <div class="fu-header">
-                    <div class="fu-meta">
-                      <span class="fu-company">{{ fu.applicationId?.company }} · {{ fu.applicationId?.position }}</span>
-                      <span class="tag orange">Reply</span>
-                      <span v-if="fu.sent" class="tag green">Sent</span>
-                      <span v-if="!fu.sent && fu.scheduledDate" class="tag blue">{{ fmtDateTime(fu.scheduledDate) }}</span>
-                    </div>
-                    <div class="fu-actions">
-                      <template v-if="!fu.sent">
-                        <button class="btn-primary small" @click="sendEmail(fu)">
-                          <span class="material-symbols-outlined">send</span> Send
-                        </button>
-                        <button class="btn-secondary small" @click="scheduleEmail(fu)">
-                          {{ fu.scheduledDate ? 'Reschedule' : 'Schedule' }}
-                        </button>
-                      </template>
-                      <button class="card-del" @click="deleteFollowUp(fu._id)">
-                        <span class="material-symbols-outlined">delete</span>
-                      </button>
-                    </div>
-                  </div>
-                  <p class="fu-subject">{{ fu.subject }}</p>
-                  <pre class="fu-body">{{ fu.body }}</pre>
-                </div>
-              </div>
-            </template>
-
-            <template v-if="followUpItems.length">
-              <div class="section-label" :style="replyItems.length ? 'margin-top:24px' : ''">
-                <span class="material-symbols-outlined">forward_to_inbox</span> Follow-ups
-              </div>
-              <div class="fu-list">
-                <div v-for="fu in followUpItems" :key="fu._id" :class="['fu-card', { sent: fu.sent }]">
-                  <div class="fu-header">
-                    <div class="fu-meta">
-                      <span class="fu-company">{{ fu.applicationId?.company }} · {{ fu.applicationId?.position }}</span>
-                      <span v-if="fu.sent" class="tag green">Sent</span>
-                      <span v-if="!fu.sent && fu.scheduledDate" class="tag blue">{{ fmtDateTime(fu.scheduledDate) }}</span>
-                    </div>
-                    <div class="fu-actions">
-                      <template v-if="!fu.sent">
-                        <button class="btn-primary small" @click="sendEmail(fu)">
-                          <span class="material-symbols-outlined">send</span> Send
-                        </button>
-                        <button class="btn-secondary small" @click="scheduleEmail(fu)">
-                          {{ fu.scheduledDate ? 'Reschedule' : 'Schedule' }}
-                        </button>
-                      </template>
-                      <button class="card-del" @click="deleteFollowUp(fu._id)">
-                        <span class="material-symbols-outlined">delete</span>
-                      </button>
-                    </div>
-                  </div>
-                  <p class="fu-subject">{{ fu.subject }}</p>
-                  <pre class="fu-body">{{ fu.body }}</pre>
-                </div>
-              </div>
-            </template>
-          </template>
-        </section>
-
-        <!-- ══ HISTORY ══ -->
-        <section v-show="activeTab === 'activity'">
-          <div class="page-header">
-            <h1>History</h1>
-          </div>
-          <div v-if="activityLogs.length === 0" class="empty-state">
-            <span class="material-symbols-outlined">history_toggle_off</span>
-            <p>No activity yet.</p>
-          </div>
-          <div v-else class="activity-feed">
-            <div v-for="log in activityLogs" :key="log._id" class="activity-item">
-              <span :class="['activity-dot', `ev-${log.event}`]"></span>
-              <div class="activity-content">
-                <span class="activity-desc">{{ log.description }}</span>
-                <span class="activity-time">{{ fmtDateTime(log.timestamp) }}</span>
-              </div>
-            </div>
-          </div>
-        </section>
       </main>
 
       <!-- ── MODAL ── -->
