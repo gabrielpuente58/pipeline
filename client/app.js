@@ -30,6 +30,7 @@ createApp({
       scanning: false,
       saving:   false,
       appFilter: "all",
+      appView: "dashboard",
 
       showModal: false,
       editing: null,
@@ -38,6 +39,9 @@ createApp({
 
       message: "",
       messageType: "success",
+
+      draggingApp: null,
+      dragOverCol: null,
     };
   },
 
@@ -257,6 +261,40 @@ createApp({
         this.followUps = this.followUps.filter((f) => f._id !== id);
         this.notify("Deleted");
       }
+    },
+
+    dragStart(app) {
+      this.draggingApp = app;
+    },
+    dragEnd() {
+      this.draggingApp = null;
+      this.dragOverCol = null;
+    },
+    dragOver(e) {
+      this.dragOverCol = e.currentTarget.dataset.col;
+    },
+    dragLeave(e) {
+      if (!e.currentTarget.contains(e.relatedTarget)) {
+        this.dragOverCol = null;
+      }
+    },
+    async drop(status, e) {
+      if (!this.draggingApp || this.draggingApp.status === status) {
+        this.draggingApp = null;
+        this.dragOverCol = null;
+        return;
+      }
+      const res = await fetch(`${this.apiUrl}/applications/${this.draggingApp._id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (res.ok) {
+        await Promise.all([this.fetchApplications(), this.fetchActivity()]);
+        this.notify(`Moved to ${status}`);
+      }
+      this.draggingApp = null;
+      this.dragOverCol = null;
     },
 
     fmtDate(d) {

@@ -100,6 +100,21 @@ async function getGmailClient() {
   return google.gmail({ version: "v1", auth });
 }
 
+async function createCalendarEvent(auth, app) {
+  const calendar = google.calendar({ version: "v3", auth });
+  const start = new Date(app.interviewDate);
+  const end   = new Date(start.getTime() + 60 * 60 * 1000); // 1 hour
+  await calendar.events.insert({
+    calendarId: "primary",
+    requestBody: {
+      summary:     `Interview — ${app.company} (${app.position})`,
+      description: `Job application interview\nCompany: ${app.company}\nRole: ${app.position}${app.jobUrl ? '\nJob URL: ' + app.jobUrl : ''}`,
+      start: { dateTime: start.toISOString() },
+      end:   { dateTime: end.toISOString() },
+    },
+  });
+}
+
 // ─── AI AGENT ────────────────────────────────────────────────────────────────
 //
 // Triggered by POST /scan-inbox. Runs 5 nodes in order:
@@ -293,6 +308,16 @@ app.post("/applications", async (req, res) => {
   try {
     const doc = await Application.create(req.body);
     await ActivityLog.create({ applicationId: doc._id, event: "created", description: `Applied to ${doc.position} at ${doc.company}` });
+    if (doc.interviewDate) {
+      try {
+        const token = await GmailToken.findOne();
+        if (token) {
+          const auth = makeOAuthClient();
+          auth.setCredentials({ access_token: token.access_token, refresh_token: token.refresh_token, expiry_date: token.expiry_date });
+          await createCalendarEvent(auth, doc);
+        }
+      } catch (calErr) { console.error("Calendar event error:", calErr.message); }
+    }
     res.status(201).json(doc);
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
@@ -304,6 +329,16 @@ app.put("/applications/:id", async (req, res) => {
     const doc = await Application.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
     if (prev.status !== doc.status) {
       await ActivityLog.create({ applicationId: doc._id, event: "status-change", description: `${doc.company}: ${prev.status} → ${doc.status}` });
+    }
+    if (req.body.interviewDate && String(prev.interviewDate) !== String(new Date(req.body.interviewDate))) {
+      try {
+        const token = await GmailToken.findOne();
+        if (token) {
+          const auth = makeOAuthClient();
+          auth.setCredentials({ access_token: token.access_token, refresh_token: token.refresh_token, expiry_date: token.expiry_date });
+          await createCalendarEvent(auth, doc);
+        }
+      } catch (calErr) { console.error("Calendar event error:", calErr.message); }
     }
     res.json(doc);
   } catch (err) { res.status(400).json({ error: err.message }); }
@@ -459,7 +494,11 @@ app.get("/auth/gmail", (_req, res) => {
   const url = makeOAuthClient().generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
-    scope: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"],
+    scope: [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/calendar.events",
+    ],
   });
   res.redirect(url);
 });
