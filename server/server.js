@@ -15,12 +15,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const MONGODB_URI    = process.env.MONGODB_URI       || "mongodb://localhost:27017";
-const DB_NAME        = process.env.DB_NAME           || "nourishweek";
-const PORT           = process.env.PORT              || 8080;
+const MONGODB_URI     = process.env.MONGODB_URI        || "mongodb://localhost:27017";
+const DB_NAME         = process.env.DB_NAME            || "racedayplanner";
+const PORT            = process.env.PORT               || 8080;
 const SPOONACULAR_KEY = process.env.SPOONACULAR_API_KEY;
-const OLLAMA_HOST    = process.env.OLLAMA_HOST       || "http://golem:11434";
-const OLLAMA_MODEL   = process.env.OLLAMA_MODEL      || "gpt-oss:20b";
+const OLLAMA_HOST     = process.env.OLLAMA_HOST        || "http://golem:11434";
+const OLLAMA_MODEL    = process.env.OLLAMA_MODEL       || "gpt-oss:20b";
 
 const llm = new ChatOllama({
   baseUrl: OLLAMA_HOST,
@@ -37,7 +37,7 @@ mongoose
 
 // ─── SCHEMAS ──────────────────────────────────────────────────────────────────
 
-// User — stores biometric profile; calorieTarget is computed server-side
+// User — stores biometric profile; calorieTarget is computed server-side via Mifflin-St Jeor
 const userSchema = new mongoose.Schema({
   height: { type: Number, required: true, min: 1 }, // cm
   weight: { type: Number, required: true, min: 1 }, // kg
@@ -46,7 +46,7 @@ const userSchema = new mongoose.Schema({
   calorieTarget: { type: Number },
 });
 
-// Mifflin-St Jeor BMR (sedentary TDEE approximation) — computed before every save
+// Mifflin-St Jeor BMR — computed before every save
 userSchema.pre("save", async function () {
   const base = 10 * this.weight + 6.25 * this.height - 5 * this.age;
   this.calorieTarget = this.sex === "male" ? base + 5 : base - 161;
@@ -54,45 +54,38 @@ userSchema.pre("save", async function () {
 
 const User = mongoose.model("User", userSchema);
 
-// MealPlan — one document per generated week plan, linked to a User
-const mealPlanSchema = new mongoose.Schema(
-  {
-    userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-    },
-    days: [
-      {
-        day: {
-          type: String,
-          enum: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-          required: true,
-        },
-        workout:    String,
-        recipeId:   Number,
-        name:       String,
-        imageUrl:   String,
-        calories:   Number,
-        macros: {
-          protein: Number,
-          carbs:   Number,
-          fat:     Number,
-        },
-        workoutTag:   String, // e.g. "+carbs"
-        instructions: String,
-        ingredients:  [String],
-      },
-    ],
+// DailyPlan — one document per generated day plan, linked to a User
+const dailyPlanSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
   },
-  { timestamps: true },
-);
+  date:          { type: Date, default: Date.now },
+  totalCalories: Number,
+  workouts: {
+    swim: { type: Number, default: 0 }, // minutes
+    bike: { type: Number, default: 0 },
+    run:  { type: Number, default: 0 },
+    lift: { type: Number, default: 0 },
+  },
+  meals: [
+    {
+      mealType:     { type: String, enum: ["breakfast", "lunch", "dinner"], required: true },
+      recipeId:     Number,
+      name:         String,
+      imageUrl:     String,
+      calories:     Number,
+      macros:       { protein: Number, carbs: Number, fat: Number },
+      ingredients:  [String],
+      instructions: String,
+    },
+  ],
+});
 
-const MealPlan = mongoose.model("MealPlan", mealPlanSchema);
+const DailyPlan = mongoose.model("DailyPlan", dailyPlanSchema);
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
-
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 // Strip HTML tags from Spoonacular instruction strings
 function stripTags(html = "") {
@@ -105,45 +98,34 @@ function getNutrient(nutrients = [], name) {
   return found ? Math.round(found.amount) : 0;
 }
 
-// ─── LANGGRAPH AGENT ──────────────────────────────────────────────────────────
-//
-// Triggered by POST /meal-plans.  The LLM drives tool selection via bindTools().
-// Nodes: planMeals (LLM) → searchRecipes | getRecipeDetails | calculateNutrition
-//        | savePlan → END
-// The routing function reads state.toolCalls[0].name to dispatch to the right node,
-// looping back to planMeals after each tool result until SaveMealPlan is called.
-
-// ─── REQUEST CONTEXT ─────────────────────────────────────────────────────────
-// Holds per-request data that tools need but the LLM shouldn't have to pass.
+// ─── REQUEST CONTEXT ──────────────────────────────────────────────────────────
+// Holds per-request data that tools need but the LLM should not have to pass.
 // Safe for this single-server school project (not concurrent-request safe).
 
 const _ctx = {
-  calorieTargets: {},
-  workoutTags:    {},
-  workouts:       {},
-  userId:         "",
-  recipeDetails:  {}, // accumulated GetRecipeDetails results keyed by day
-  usedRecipeIds:  new Set(), // prevent duplicate recipes across days
+  mealTargets:   {},          // { breakfast: N, lunch: N, dinner: N }
+  recipeDetails: {},          // { breakfast: {...}, lunch: {...}, dinner: {...} }
+  usedRecipeIds: new Set(),
+  userId:        "",
+  totalCalories: 0,
+  workouts:      {},
 };
 
 // ─── TOOLS ────────────────────────────────────────────────────────────────────
-// Schemas are kept intentionally minimal — fewer fields = less chance the LLM
-// generates malformed JSON. Numbers that require computation live server-side.
 
 class SearchRecipesTool extends StructuredTool {
   name        = "SearchRecipes";
-  description = "Search for a recipe for a specific day. The calorie range is determined automatically. Provide a food query inspired by the user's preferences.";
+  description = "Search for a recipe for a specific meal. The calorie range is determined automatically.";
   schema      = z.object({
-    day:   z.string().describe("Day of the week: Mon, Tue, Wed, Thu, Fri, Sat, or Sun"),
-    query: z.string().describe("Food or cuisine query e.g. 'Mediterranean chicken', 'vegetarian stir fry'"),
+    mealType: z.string().describe("breakfast, lunch, or dinner"),
+    query:    z.string().describe("Food query e.g. 'oatmeal banana', 'grilled salmon'"),
   });
 
-  async _call({ day, query }) {
-    // calorieTargets are daily totals — divide by 3 for a single-meal calorie range
-    const dailyTarget = _ctx.calorieTargets[day] || 2000;
-    const mealTarget  = Math.round(dailyTarget / 3);
-    const minCal      = Math.max(100, mealTarget - 400);
-    const maxCal      = mealTarget + 400;
+  async _call({ mealType, query }) {
+    const target = _ctx.mealTargets[mealType] || 600;
+    const minCal = Math.max(100, target - 300);
+    const maxCal = target + 300;
+
     try {
       const url =
         `https://api.spoonacular.com/recipes/complexSearch` +
@@ -153,46 +135,59 @@ class SearchRecipesTool extends StructuredTool {
         `&query=${encodeURIComponent(query)}`;
       const res  = await fetch(url);
       const data = await res.json();
-      if (data.status === 'failure' || data.code === 402) {
+
+      if (data.status === "failure" || data.code === 402) {
         console.error("Spoonacular error:", data.message || data);
       }
-      console.log(`SearchRecipes [${day}] query="${query}" cal=${minCal}-${maxCal} hits=${data.results?.length ?? 0}`);
-      // Pick first result not already used this week
+
+      console.log(`SearchRecipes [${mealType}] query="${query}" cal=${minCal}-${maxCal} hits=${data.results?.length ?? 0}`);
+
       const hit = (data.results || []).find((r) => !_ctx.usedRecipeIds.has(r.id)) || data.results?.[0];
       if (hit?.id) _ctx.usedRecipeIds.add(hit.id);
+
       return JSON.stringify({
-        day,
+        mealType,
         recipeId: hit?.id    ?? 0,
         title:    hit?.title ?? "Balanced Meal",
-        image:    hit?.image ?? "",
       });
     } catch (err) {
       console.error("SearchRecipes error:", err.message);
-      return JSON.stringify({ day, recipeId: 0, title: "Balanced Meal", image: "" });
+      return JSON.stringify({ mealType, recipeId: 0, title: "Balanced Meal" });
     }
   }
 }
 
 class GetRecipeDetailsTool extends StructuredTool {
   name        = "GetRecipeDetails";
-  description = "Get full ingredients, instructions, and nutrition for a recipe. Call this after SearchRecipes for each day using the recipeId returned.";
+  description = "Get full ingredients, nutrition, and instructions for a recipe.";
   schema      = z.object({
-    day:      z.string().describe("Day of the week: Mon, Tue, Wed, Thu, Fri, Sat, or Sun"),
-    recipeId: z.number().int().optional().default(0).describe("The recipeId number returned by SearchRecipes for this day"),
+    mealType: z.string().describe("breakfast, lunch, or dinner"),
+    recipeId: z.number().int().optional().default(0).describe("The recipeId returned by SearchRecipes for this meal"),
   });
 
-  async _call({ day, recipeId }) {
+  async _call({ mealType, recipeId }) {
     let detail;
+
     if (!recipeId || recipeId === 0) {
-      const target = _ctx.calorieTargets[day] || 2000;
+      const target = _ctx.mealTargets[mealType] || 600;
       detail = {
-        name: "Balanced Meal", imageUrl: "", ingredients: ["Protein", "Carbs", "Vegetables", "Healthy fats"],
+        name:         "Balanced Meal",
+        imageUrl:     "",
+        ingredients:  ["Protein", "Carbs", "Vegetables", "Healthy fats"],
         instructions: "Prepare a balanced meal with your chosen ingredients.",
-        calories: target, macros: { protein: Math.round(target * 0.3 / 4), carbs: Math.round(target * 0.45 / 4), fat: Math.round(target * 0.25 / 9) },
+        calories:     target,
+        macros: {
+          protein: Math.round((target * 0.3) / 4),
+          carbs:   Math.round((target * 0.45) / 4),
+          fat:     Math.round((target * 0.25) / 9),
+        },
       };
     } else {
       try {
-        const res       = await fetch(`https://api.spoonacular.com/recipes/${recipeId}/information?apiKey=${SPOONACULAR_KEY}&includeNutrition=true`);
+        const res  = await fetch(
+          `https://api.spoonacular.com/recipes/${recipeId}/information` +
+          `?apiKey=${SPOONACULAR_KEY}&includeNutrition=true`
+        );
         const data      = await res.json();
         const nutrients = data.nutrition?.nutrients || [];
         detail = {
@@ -209,65 +204,58 @@ class GetRecipeDetailsTool extends StructuredTool {
         };
       } catch (err) {
         console.error("GetRecipeDetails error:", err.message);
-        const target = _ctx.calorieTargets[day] || 2000;
-        detail = { name: "Balanced Meal", imageUrl: "", ingredients: [], instructions: "", calories: target, macros: { protein: 0, carbs: 0, fat: 0 } };
+        const target = _ctx.mealTargets[mealType] || 600;
+        detail = {
+          name: "Balanced Meal", imageUrl: "", ingredients: [], instructions: "",
+          calories: target, macros: { protein: 0, carbs: 0, fat: 0 },
+        };
       }
     }
-    // Store in server-side context so SaveMealPlan can assemble the plan
-    _ctx.recipeDetails[day] = { ...detail, recipeId };
-    return JSON.stringify({ day, ...detail, recipeId });
+
+    // Store in server-side context so SaveDailyPlan can assemble the plan
+    _ctx.recipeDetails[mealType] = { ...detail, recipeId };
+
+    return JSON.stringify({ mealType, ...detail, recipeId });
   }
 }
 
-class CalculateNutritionTool extends StructuredTool {
-  name        = "CalculateNutrition";
-  description = "Verify the weekly meal plan meets calorie targets. Call this after GetRecipeDetails has been called for all 7 days. No arguments needed.";
+class SaveDailyPlanTool extends StructuredTool {
+  name        = "SaveDailyPlan";
+  description = "Save the finalized meal plan. Call this after GetRecipeDetails has been called for all 3 meals. No arguments needed.";
   schema      = z.object({});
 
   async _call() {
-    const results = DAYS.map((day) => {
-      const detail = _ctx.recipeDetails[day];
-      const target = _ctx.calorieTargets[day] || 2000;
-      const calories = detail?.calories || 0;
-      return { day, calories, target, pass: Math.abs(calories - target) <= 350 };
-    });
-    return JSON.stringify({ pass: results.every((r) => r.pass), results });
-  }
-}
-
-class SaveMealPlanTool extends StructuredTool {
-  name        = "SaveMealPlan";
-  description = "Save the finalized 7-day meal plan to the database. Call this after CalculateNutrition. No arguments needed — the plan is assembled from the recipe details already collected.";
-  schema      = z.object({});
-
-  async _call() {
-    const days = DAYS.map((day) => {
-      const detail = _ctx.recipeDetails[day] || {};
+    const meals = ["breakfast", "lunch", "dinner"].map((mealType) => {
+      const detail = _ctx.recipeDetails[mealType] || {};
       return {
-        day,
-        workout:      _ctx.workouts[day]    || "",
-        recipeId:     detail.recipeId       || 0,
-        name:         detail.name           || "Balanced Meal",
-        imageUrl:     detail.imageUrl       || "",
-        calories:     detail.calories       || 0,
-        macros:       detail.macros         || { protein: 0, carbs: 0, fat: 0 },
-        workoutTag:   _ctx.workoutTags[day] || "",
-        instructions: detail.instructions   || "",
-        ingredients:  detail.ingredients    || [],
+        mealType,
+        recipeId:     detail.recipeId     || 0,
+        name:         detail.name         || "Balanced Meal",
+        imageUrl:     detail.imageUrl     || "",
+        calories:     detail.calories     || 0,
+        macros:       detail.macros       || { protein: 0, carbs: 0, fat: 0 },
+        ingredients:  detail.ingredients  || [],
+        instructions: detail.instructions || "",
       };
     });
-    const plan = await MealPlan.create({ userId: _ctx.userId, days });
-    console.log("SaveMealPlan: created", plan._id.toString());
+
+    const plan = await DailyPlan.create({
+      userId:        _ctx.userId,
+      totalCalories: _ctx.totalCalories,
+      workouts:      _ctx.workouts,
+      meals,
+    });
+
+    console.log("SaveDailyPlan: created", plan._id.toString());
     return JSON.stringify({ savedPlanId: plan._id.toString() });
   }
 }
 
 // ─── TOOL INSTANCES ───────────────────────────────────────────────────────────
 
-const searchRecipesTool      = new SearchRecipesTool();
-const getRecipeDetailsTool   = new GetRecipeDetailsTool();
-const calculateNutritionTool = new CalculateNutritionTool();
-const saveMealPlanTool       = new SaveMealPlanTool();
+const searchRecipesTool  = new SearchRecipesTool();
+const getRecipeDetailsTool = new GetRecipeDetailsTool();
+const saveDailyPlanTool  = new SaveDailyPlanTool();
 
 // ─── GRAPH STATE ──────────────────────────────────────────────────────────────
 
@@ -280,17 +268,13 @@ const graphStateData = {
 
 // ─── NODES ────────────────────────────────────────────────────────────────────
 
-// planMealsNode — the LLM node; called repeatedly until SaveMealPlan is chosen
 const llmWithTools = llm.bindTools([
   searchRecipesTool,
   getRecipeDetailsTool,
-  calculateNutritionTool,
-  saveMealPlanTool,
+  saveDailyPlanTool,
 ]);
 
 async function planMealsNode(state) {
-  state.sendStatus?.("Planning your meals…");
-
   let response, attempts = 0;
   while (true) {
     try {
@@ -307,14 +291,12 @@ async function planMealsNode(state) {
 
   if (!calls.length) {
     console.warn("LLM returned no tool calls — re-prompting");
-    // Inject a nudge so the LLM sees it needs to keep going
     const nudge = new HumanMessage(
       "You must call a tool. Check the tool results above and call the next required tool now."
     );
     return { messages: [nudge], toolCalls: [] };
   }
 
-  // Add the AI message (with tool_calls) so ToolMessages can be linked by tool_call_id
   return {
     messages:  [response],
     toolCalls: calls,
@@ -322,16 +304,22 @@ async function planMealsNode(state) {
 }
 
 async function searchRecipesNode(state) {
-  state.sendStatus?.("Finding recipes that fit your targets…");
-  const toolCall = state.toolCalls.shift(); // consume head of queue
+  const toolCall = state.toolCalls.shift();
+  const mealType = toolCall.args?.mealType || "breakfast";
+
+  const statusMap = {
+    breakfast: "Searching for breakfast\u2026",
+    lunch:     "Searching for lunch\u2026",
+    dinner:    "Searching for dinner\u2026",
+  };
+  state.sendStatus?.(statusMap[mealType] || "Finding recipes\u2026");
 
   let toolResult;
   try {
     toolResult = await searchRecipesTool.invoke(toolCall.args);
   } catch (err) {
     console.warn("SearchRecipes parse error, using fallback:", err.message);
-    const day = toolCall.args?.day || "Mon";
-    toolResult = await searchRecipesTool.invoke({ day, query: "healthy balanced meal" });
+    toolResult = await searchRecipesTool.invoke({ mealType, query: "healthy balanced meal" });
   }
 
   const message = new ToolMessage({
@@ -343,17 +331,16 @@ async function searchRecipesNode(state) {
 }
 
 async function getRecipeDetailsNode(state) {
-  state.sendStatus?.("Getting recipe details…");
+  state.sendStatus?.("Getting recipe details\u2026");
   const toolCall = state.toolCalls.shift();
 
   let toolResult;
   try {
     toolResult = await getRecipeDetailsTool.invoke(toolCall.args);
   } catch (err) {
-    // LLM produced malformed args (e.g. wrong field name) — fall back to day-only call
     console.warn("GetRecipeDetails parse error, using fallback:", err.message);
-    const day = toolCall.args?.day || "Mon";
-    toolResult = await getRecipeDetailsTool.invoke({ day, recipeId: 0 });
+    const mealType = toolCall.args?.mealType || "breakfast";
+    toolResult = await getRecipeDetailsTool.invoke({ mealType, recipeId: 0 });
   }
 
   const message = new ToolMessage({
@@ -364,38 +351,23 @@ async function getRecipeDetailsNode(state) {
   return { messages: [message] };
 }
 
-async function calculateNutritionNode(state) {
-  state.sendStatus?.("Checking nutrition…");
-  const toolCall   = state.toolCalls.shift();
-  const toolResult = await calculateNutritionTool.invoke(toolCall.args);
-  const message    = new ToolMessage({
-    content:      typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult),
-    name:         toolCall.name,
-    tool_call_id: toolCall.id,
-  });
-  return { messages: [message] };
-}
-
 async function savePlanNode(state) {
-  state.sendStatus?.("Finalizing your plan…");
+  state.sendStatus?.("Saving your meal plan\u2026");
   const toolCall   = state.toolCalls.shift();
-  const toolResult = await saveMealPlanTool.invoke(toolCall.args);
+  const toolResult = await saveDailyPlanTool.invoke(toolCall.args);
   const parsed     = typeof toolResult === "string" ? JSON.parse(toolResult) : toolResult;
   return { result: parsed };
 }
 
 // ─── ROUTING FUNCTION ─────────────────────────────────────────────────────────
-// Dispatches to the right node based on the next pending tool call name.
-// Loops back to planMeals after each tool result until result is set (SaveMealPlan done).
 
 function routingFunction(state) {
   if (state.result) return END;
   const next = state.toolCalls[0];
-  if (!next)                              return "planMeals";        // LLM needs to decide
-  if (next.name === "SearchRecipes")      return "searchRecipes";
-  if (next.name === "GetRecipeDetails")   return "getRecipeDetails";
-  if (next.name === "CalculateNutrition") return "calculateNutrition";
-  if (next.name === "SaveMealPlan")       return "savePlan";
+  if (!next)                             return "planMeals";
+  if (next.name === "SearchRecipes")     return "searchRecipes";
+  if (next.name === "GetRecipeDetails")  return "getRecipeDetails";
+  if (next.name === "SaveDailyPlan")     return "savePlan";
   return "planMeals";
 }
 
@@ -403,25 +375,18 @@ function routingFunction(state) {
 
 const workflow = new StateGraph({ channels: graphStateData });
 
-workflow.addNode("planMeals",          planMealsNode);
-workflow.addNode("searchRecipes",      searchRecipesNode);
-workflow.addNode("getRecipeDetails",   getRecipeDetailsNode);
-workflow.addNode("calculateNutrition", calculateNutritionNode);
-workflow.addNode("savePlan",           savePlanNode);
+workflow.addNode("planMeals",       planMealsNode);
+workflow.addNode("searchRecipes",   searchRecipesNode);
+workflow.addNode("getRecipeDetails", getRecipeDetailsNode);
+workflow.addNode("savePlan",        savePlanNode);
 
 workflow.addEdge(START, "planMeals");
 
-// After planMeals, route based on which tool the LLM chose
-workflow.addConditionalEdges("planMeals", routingFunction,
-  ["planMeals", "searchRecipes", "getRecipeDetails", "calculateNutrition", "savePlan", END]);
+const conditionalTargets = ["planMeals", "searchRecipes", "getRecipeDetails", "savePlan", END];
 
-// After each tool node, route again (either back to planMeals or to another tool)
-workflow.addConditionalEdges("searchRecipes", routingFunction,
-  ["planMeals", "searchRecipes", "getRecipeDetails", "calculateNutrition", "savePlan"]);
-workflow.addConditionalEdges("getRecipeDetails", routingFunction,
-  ["planMeals", "searchRecipes", "getRecipeDetails", "calculateNutrition", "savePlan"]);
-workflow.addConditionalEdges("calculateNutrition", routingFunction,
-  ["planMeals", "searchRecipes", "getRecipeDetails", "calculateNutrition", "savePlan"]);
+workflow.addConditionalEdges("planMeals",       routingFunction, conditionalTargets);
+workflow.addConditionalEdges("searchRecipes",   routingFunction, conditionalTargets);
+workflow.addConditionalEdges("getRecipeDetails", routingFunction, conditionalTargets);
 
 workflow.addEdge("savePlan", END);
 
@@ -451,10 +416,10 @@ app.get("/users/:id", async (req, res) => {
   }
 });
 
-// ─── ROUTES: MEAL PLANS ───────────────────────────────────────────────────────
+// ─── ROUTES: DAILY PLANS ──────────────────────────────────────────────────────
 
-// POST /meal-plans — SSE streaming: runs the LangGraph agent and streams progress
-app.post("/meal-plans", async (req, res) => {
+// POST /daily-plans — SSE streaming: runs the LangGraph agent and streams progress
+app.post("/daily-plans", async (req, res) => {
   res.setHeader("Content-Type",  "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection",    "keep-alive");
@@ -465,61 +430,73 @@ app.post("/meal-plans", async (req, res) => {
   function sendError(msg)   { res.write(`data: ${JSON.stringify({ error: msg })}\n\n`); res.end(); }
 
   const { userId, workouts = {}, foodPreference = "" } = req.body;
+
   const user = await User.findById(userId).catch(() => null);
   if (!user) { sendError("User not found"); return; }
 
-  // Pre-compute workout tags and calorie targets (deterministic math, no LLM needed)
-  const HIGH_LOAD      = /leg|squat|run|long|heavy|cardio|bike|swim/i;
-  const workoutTags    = {};
-  const calorieTargets = {};
-  for (const day of DAYS) {
-    const w             = workouts[day] || "";
-    workoutTags[day]    = HIGH_LOAD.test(w) ? "+carbs" : "";
-    calorieTargets[day] = Math.round(workoutTags[day] === "+carbs" ? user.calorieTarget + 200 : user.calorieTarget);
-  }
+  // Workout calorie burn rates (cal/min)
+  const BURN = { swim: 11.67, bike: 10, run: 12.5, lift: 6.67 };
 
-  // Build context string for the LLM prompt
-  const dayContext = DAYS.map((d) =>
-    `  ${d}: workout="${workouts[d] || "Rest"}", calorie_target=${calorieTargets[d]}, tag="${workoutTags[d] || "none"}"`
-  ).join("\n");
+  const swim = Number(workouts.swim || 0);
+  const bike = Number(workouts.bike || 0);
+  const run  = Number(workouts.run  || 0);
+  const lift = Number(workouts.lift || 0);
+
+  const totalCalories = Math.round(
+    user.calorieTarget +
+    swim * BURN.swim +
+    bike * BURN.bike +
+    run  * BURN.run  +
+    lift * BURN.lift
+  );
+
+  const mealTargets = {
+    breakfast: totalCalories * 0.28,
+    lunch:     totalCalories * 0.35,
+    dinner:    totalCalories * 0.37,
+  };
+
+  // Populate module-level context so tools can access per-request data
+  _ctx.mealTargets   = mealTargets;
+  _ctx.recipeDetails = {};
+  _ctx.usedRecipeIds = new Set();
+  _ctx.userId        = userId;
+  _ctx.totalCalories = totalCalories;
+  _ctx.workouts      = { swim, bike, run, lift };
 
   const systemMsg = new SystemMessage(
-    `You are a meal planner assistant. You create 7-day meal plans by calling tools one at a time.\n` +
-    `Each time you are called, look at the tool results already in this conversation to understand your progress, then call EXACTLY ONE tool to take the next step.\n\n` +
-    `The required sequence is:\n` +
-    `PHASE 1 — For each day Mon,Tue,Wed,Thu,Fri,Sat,Sun (in order): call SearchRecipes to find a recipe.\n` +
-    `PHASE 2 — For each day Mon,Tue,Wed,Thu,Fri,Sat,Sun (in order): call GetRecipeDetails using the recipeId from the SearchRecipes result for that day.\n` +
-    `PHASE 3 — Call CalculateNutrition once with all 7 meals.\n` +
-    `PHASE 4 — Call SaveMealPlan once with all 7 days to finish.\n\n` +
+    `You are a meal planner for a triathlete. Plan 3 meals (breakfast, lunch, dinner) by calling tools one at a time.\n\n` +
+    `Sequence:\n` +
+    `1. SearchRecipes for breakfast (use a breakfast-appropriate query like "eggs oatmeal", "smoothie bowl", "avocado toast")\n` +
+    `2. GetRecipeDetails for breakfast using the recipeId returned\n` +
+    `3. SearchRecipes for lunch (use a lunch query like "grilled chicken salad", "tuna wrap")\n` +
+    `4. GetRecipeDetails for lunch\n` +
+    `5. SearchRecipes for dinner (use a dinner query like "salmon pasta", "beef stir fry")\n` +
+    `6. GetRecipeDetails for dinner\n` +
+    `7. Call SaveDailyPlan to finish\n\n` +
     `Rules:\n` +
-    `- Call only ONE tool per response.\n` +
-    `- Read previous tool results carefully to know which day you are on and which phase you are in.\n` +
-    `- Never repeat a tool call for a day you already have a result for.\n` +
-    `- Use a DIFFERENT query for each day — vary the cuisine, protein source, or cooking style so the week has variety (e.g. Mon: "grilled chicken Mediterranean", Tue: "salmon teriyaki", Wed: "beef stir fry", Thu: "turkey meatballs", Fri: "shrimp tacos", Sat: "lamb kebabs", Sun: "veggie curry").\n` +
-    `- Do not stop until SaveMealPlan has been called.`
+    `- Call exactly ONE tool per response\n` +
+    `- Use meal-appropriate queries that match the user's food preferences\n` +
+    `- Use DIFFERENT queries for each meal\n` +
+    `- Do not stop until SaveDailyPlan is called`
   );
 
   const humanMsg = new HumanMessage(
-    `Create a 7-day meal plan.\n` +
-    `Food preferences: ${foodPreference || "balanced, healthy meals"}\n\n` +
-    `Per-day calorie targets and workout tags:\n${dayContext}\n\n` +
-    `Begin now: call SearchRecipes for Mon.`
+    `Plan meals for today.\n` +
+    `Food preferences: ${foodPreference || "balanced, healthy meals"}\n` +
+    `Total daily calories: ${totalCalories}\n` +
+    `Workouts: swim=${swim}min, bike=${bike}min, run=${run}min, lift=${lift}min\n\n` +
+    `Meal calorie targets: breakfast=${Math.round(mealTargets.breakfast)}, lunch=${Math.round(mealTargets.lunch)}, dinner=${Math.round(mealTargets.dinner)}\n\n` +
+    `Begin with SearchRecipes for breakfast.`
   );
 
-  // Populate module-level context so tools can access per-request data
-  _ctx.calorieTargets = calorieTargets;
-  _ctx.workoutTags    = workoutTags;
-  _ctx.workouts       = workouts;
-  _ctx.userId         = userId;
-  _ctx.recipeDetails  = {};
-  _ctx.usedRecipeIds  = new Set();
-
   try {
-    sendStatus("Starting meal planning…");
+    sendStatus("Planning your meals\u2026");
     const finalState = await graph.invoke(
       { messages: [systemMsg, humanMsg], sendStatus },
-      { recursionLimit: 60 },
+      { recursionLimit: 40 },
     );
+
     console.log("FINAL STATE result:", finalState.result);
     if (finalState.result?.savedPlanId) {
       sendDone(finalState.result.savedPlanId);
@@ -532,62 +509,12 @@ app.post("/meal-plans", async (req, res) => {
   }
 });
 
-// GET /meal-plans/:id — retrieve a saved meal plan by ID
-app.get("/meal-plans/:id", async (req, res) => {
+// GET /daily-plans/:id — retrieve a saved daily plan by ID
+app.get("/daily-plans/:id", async (req, res) => {
   try {
-    const plan = await MealPlan.findById(req.params.id);
-    if (!plan) return res.status(404).json({ error: "Meal plan not found" });
+    const plan = await DailyPlan.findById(req.params.id);
+    if (!plan) return res.status(404).json({ error: "Daily plan not found" });
     res.json(plan);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// PUT /meal-plans/:id/meals/:day — swap a single day's meal
-app.put("/meal-plans/:id/meals/:day", async (req, res) => {
-  try {
-    const plan = await MealPlan.findById(req.params.id);
-    if (!plan) return res.status(404).json({ error: "Meal plan not found" });
-
-    const dayEntry = plan.days.find((d) => d.day === req.params.day);
-    if (!dayEntry)
-      return res
-        .status(404)
-        .json({ error: `Day "${req.params.day}" not found in plan` });
-
-    // Apply all provided fields to the matching day sub-document
-    const {
-      recipeId,
-      name,
-      imageUrl,
-      calories,
-      macros,
-      workoutTag,
-      instructions,
-      ingredients,
-    } = req.body;
-    if (recipeId      !== undefined) dayEntry.recipeId      = recipeId;
-    if (name          !== undefined) dayEntry.name          = name;
-    if (imageUrl      !== undefined) dayEntry.imageUrl      = imageUrl;
-    if (calories      !== undefined) dayEntry.calories      = calories;
-    if (macros        !== undefined) dayEntry.macros        = macros;
-    if (workoutTag    !== undefined) dayEntry.workoutTag    = workoutTag;
-    if (instructions  !== undefined) dayEntry.instructions  = instructions;
-    if (ingredients   !== undefined) dayEntry.ingredients   = ingredients;
-
-    await plan.save();
-    res.json(plan);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// DELETE /meal-plans/:id — remove a meal plan
-app.delete("/meal-plans/:id", async (req, res) => {
-  try {
-    const plan = await MealPlan.findByIdAndDelete(req.params.id);
-    if (!plan) return res.status(404).json({ error: "Meal plan not found" });
-    res.json({ message: "Deleted" });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -596,5 +523,5 @@ app.delete("/meal-plans/:id", async (req, res) => {
 // ─── START ────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () =>
-  console.log(`NourishWeek running on http://localhost:${PORT}`),
+  console.log(`Race Day Planner running on http://localhost:${PORT}`)
 );

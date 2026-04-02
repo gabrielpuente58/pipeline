@@ -17,19 +17,7 @@
         <span class="material-symbols-outlined logo-icon">restaurant</span>
         <span class="logo-word">Nourish<span class="logo-accent">Week</span></span>
       </div>
-      <p class="onboard-tagline">Your AI-powered weekly meal planner</p>
-
-      <div class="step-indicator">
-        <div class="step active">
-          <span class="step-num">1</span>
-          <span class="step-label">Your Profile</span>
-        </div>
-        <div class="step-line"></div>
-        <div class="step">
-          <span class="step-num">2</span>
-          <span class="step-label">Food Preferences</span>
-        </div>
-      </div>
+      <p class="onboard-tagline">Fuel your training. Plan your day.</p>
 
       <div v-if="globalError" class="global-error">
         <span class="material-symbols-outlined">error</span>
@@ -98,117 +86,166 @@
           </div>
         </div>
 
-        <button class="btn-continue" @click="goToChat">
+        <button class="btn-continue" @click="goToWorkout">
           Continue
           <span class="material-symbols-outlined">arrow_forward</span>
         </button>
       </div>
     </div>
 
-    <!-- ══ SCREEN 2: CHAT / PREFERENCES ══ -->
-    <div v-if="screen === 'chat'" class="chat-screen">
-      <div class="chat-header">
+    <!-- ══ SCREEN 2: WORKOUT INPUT ══ -->
+    <div v-if="screen === 'workout'" class="workout-screen">
+      <div class="workout-header">
         <button class="btn-back" @click="goToProfile">
           <span class="material-symbols-outlined">arrow_back</span>
           Back
-        </button>
-        <button class="btn-clear-profile" @click="clearProfile" title="Clear saved profile">
-          <span class="material-symbols-outlined">person_off</span>
-          Change profile
         </button>
         <div class="onboard-logo small">
           <span class="material-symbols-outlined logo-icon">restaurant</span>
           <span class="logo-word">Nourish<span class="logo-accent">Week</span></span>
         </div>
-        <div class="step-indicator compact">
-          <div class="step">
-            <span class="step-num done">
-              <span class="material-symbols-outlined">check</span>
-            </span>
-          </div>
-          <div class="step-line filled"></div>
-          <div class="step active">
-            <span class="step-num">2</span>
-          </div>
-        </div>
+        <button class="btn-clear-profile" @click="clearProfile" title="Clear saved profile">
+          <span class="material-symbols-outlined">person_off</span>
+          Change profile
+        </button>
       </div>
 
-      <div v-if="globalError" class="global-error chat-error">
+      <div v-if="globalError" class="global-error workout-global-error">
         <span class="material-symbols-outlined">error</span>
         {{ globalError }}
       </div>
 
-      <div class="chat-body">
+      <!-- Today's Training Section -->
+      <div class="workout-section">
+        <h2 class="section-heading">
+          <span class="material-symbols-outlined">directions_run</span>
+          Today's Training
+        </h2>
+        <p class="section-sub">Drag the sliders to set your workout durations.</p>
 
-        <!-- Food preference input -->
-        <div class="chat-section">
-          <h2 class="chat-heading">What are you craving this week?</h2>
-          <p class="chat-sub">Describe the food you want — cuisine style, dietary needs, anything.</p>
+        <div class="sport-sliders">
 
-          <div class="chat-input-wrap" :class="{ invalid: errors.foodPreference }">
-            <span class="chat-input-icon material-symbols-outlined">chat</span>
-            <textarea
-              class="chat-textarea"
-              v-model="foodPreference"
-              placeholder="e.g. Mediterranean food, high protein, no dairy, something quick to prep…"
-              rows="3"
-            ></textarea>
-          </div>
-          <span class="err" v-if="errors.foodPreference">{{ errors.foodPreference }}</span>
-
-          <!-- Suggestion chips -->
-          <div class="chip-row">
-            <button
-              class="chip"
-              v-for="chip in suggestions"
-              :key="chip"
-              @click="addSuggestion(chip)"
-              type="button"
-            >
-              <span class="material-symbols-outlined">add</span>
-              {{ chip }}
-            </button>
-          </div>
-        </div>
-
-        <!-- Workout fields -->
-        <div class="chat-section">
-          <h3 class="section-heading">
-            <span class="material-symbols-outlined">fitness_center</span>
-            This Week's Workouts
-          </h3>
-          <p class="chat-sub">We'll adjust calories on heavy training days.</p>
-
-          <div class="workout-fields">
-            <div class="workout-field" v-for="day in days" :key="day">
-              <label class="workout-label">{{ day }}</label>
+          <!-- Swim -->
+          <div class="sport-slider">
+            <div class="sport-icon sport-icon-swim">
+              <span class="material-symbols-outlined">pool</span>
+            </div>
+            <span class="sport-label">Swim</span>
+            <div class="slider-track">
               <input
-                class="workout-input"
-                :class="{ invalid: day === 'Mon' && errors.workouts }"
-                v-model="workouts[day]"
-                :placeholder="
-                  day === 'Mon' ? 'e.g. Leg day, 45min' :
-                  day === 'Tue' ? 'e.g. Upper body' :
-                  day === 'Wed' ? 'e.g. Rest' :
-                  day === 'Thu' ? 'e.g. HIIT, 20min' :
-                  day === 'Fri' ? 'e.g. Core + yoga' :
-                  day === 'Sat' ? 'e.g. Long run, 60min' :
-                  'e.g. Active recovery'
-                "
-                type="text"
+                type="range"
+                min="0"
+                max="240"
+                step="15"
+                v-model.number="workouts.swim"
+                class="sport-range sport-range-swim"
+                :style="sliderStyle(workouts.swim, '#38bdf8')"
               />
             </div>
-            <span class="err workout-err" v-if="errors.workouts">{{ errors.workouts }}</span>
+            <span class="sport-duration" style="color:#38bdf8">{{ formatDuration(workouts.swim) }}</span>
           </div>
-        </div>
 
+          <!-- Bike -->
+          <div class="sport-slider">
+            <div class="sport-icon sport-icon-bike">
+              <span class="material-symbols-outlined">directions_bike</span>
+            </div>
+            <span class="sport-label">Bike</span>
+            <div class="slider-track">
+              <input
+                type="range"
+                min="0"
+                max="240"
+                step="15"
+                v-model.number="workouts.bike"
+                class="sport-range sport-range-bike"
+                :style="sliderStyle(workouts.bike, '#fb923c')"
+              />
+            </div>
+            <span class="sport-duration" style="color:#fb923c">{{ formatDuration(workouts.bike) }}</span>
+          </div>
+
+          <!-- Run -->
+          <div class="sport-slider">
+            <div class="sport-icon sport-icon-run">
+              <span class="material-symbols-outlined">directions_run</span>
+            </div>
+            <span class="sport-label">Run</span>
+            <div class="slider-track">
+              <input
+                type="range"
+                min="0"
+                max="240"
+                step="15"
+                v-model.number="workouts.run"
+                class="sport-range sport-range-run"
+                :style="sliderStyle(workouts.run, '#4ade80')"
+              />
+            </div>
+            <span class="sport-duration" style="color:#4ade80">{{ formatDuration(workouts.run) }}</span>
+          </div>
+
+          <!-- Lift -->
+          <div class="sport-slider">
+            <div class="sport-icon sport-icon-lift">
+              <span class="material-symbols-outlined">fitness_center</span>
+            </div>
+            <span class="sport-label">Lift</span>
+            <div class="slider-track">
+              <input
+                type="range"
+                min="0"
+                max="240"
+                step="15"
+                v-model.number="workouts.lift"
+                class="sport-range sport-range-lift"
+                :style="sliderStyle(workouts.lift, '#c084fc')"
+              />
+            </div>
+            <span class="sport-duration" style="color:#c084fc">{{ formatDuration(workouts.lift) }}</span>
+          </div>
+
+        </div>
+        <span class="err" v-if="errors.workouts">{{ errors.workouts }}</span>
       </div>
 
-      <div class="chat-footer">
+      <!-- Food Preference Section -->
+      <div class="workout-section">
+        <h2 class="section-heading">
+          <span class="material-symbols-outlined">restaurant</span>
+          Food Preferences
+        </h2>
+
+        <div class="chat-input-wrap" :class="{ invalid: errors.foodPreference }">
+          <span class="chat-input-icon material-symbols-outlined">restaurant</span>
+          <textarea
+            class="chat-textarea"
+            v-model="foodPreference"
+            placeholder="e.g. high protein, no dairy, Mediterranean…"
+            rows="3"
+          ></textarea>
+        </div>
+        <span class="err" v-if="errors.foodPreference">{{ errors.foodPreference }}</span>
+
+        <div class="chip-row">
+          <button
+            class="chip"
+            v-for="chip in suggestions"
+            :key="chip"
+            @click="addSuggestion(chip)"
+            type="button"
+          >
+            <span class="material-symbols-outlined">add</span>
+            {{ chip }}
+          </button>
+        </div>
+      </div>
+
+      <div class="workout-footer">
         <button class="btn-generate" @click="generate" :disabled="generating">
           <span class="material-symbols-outlined" v-if="!generating">auto_awesome</span>
           <span class="material-symbols-outlined spin" v-else>progress_activity</span>
-          {{ generating ? 'Planning your week…' : 'Generate my week' }}
+          {{ generating ? 'Planning your day…' : 'Plan my day' }}
         </button>
       </div>
     </div>
@@ -229,129 +266,133 @@
       </div>
     </div>
 
-    <!-- ══ SCREEN 4: WEEK BOARD ══ -->
+    <!-- ══ SCREEN 4: BOARD ══ -->
     <div v-if="screen === 'board'" class="board-screen">
       <header class="app-header">
         <span class="app-logo">
           <span class="material-symbols-outlined">restaurant</span>
           Nourish<span class="logo-accent">Week</span>
         </span>
+
         <div class="summary-bar">
           <span class="summary-stat">
-            <span class="material-symbols-outlined">calendar_month</span>
-            {{ plan.days.length }} meals planned
-          </span>
-          <span class="summary-stat">
             <span class="material-symbols-outlined">local_fire_department</span>
-            ~{{ avgCalories }} cal/day avg
+            {{ avgCalories }} cal total
           </span>
-          <button class="btn-regenerate" @click="regenerate">
-            <span class="material-symbols-outlined">refresh</span>
-            Regenerate
-          </button>
+          <span
+            class="workout-pill"
+            v-for="w in workoutSummary"
+            :key="w.label"
+          >
+            <span class="material-symbols-outlined">{{ w.icon }}</span>
+            {{ w.label }}
+          </span>
         </div>
+
+        <button class="btn-regenerate" @click="regenerate">
+          <span class="material-symbols-outlined">refresh</span>
+          Plan again
+        </button>
       </header>
 
-      <div class="week-grid">
+      <div class="meals-row">
         <div
-          class="day-card"
-          v-for="day in plan.days"
-          :key="day.day"
-          @click="openDetail(day)"
+          class="meal-card"
+          v-for="meal in plan.meals"
+          :key="meal.mealType"
+          @click="openDetail(meal)"
         >
-          <div class="day-card-image">
-            <img v-if="day.imageUrl" :src="day.imageUrl" :alt="day.name" class="meal-img" />
+          <div class="meal-card-image">
+            <img v-if="meal.imageUrl" :src="meal.imageUrl" :alt="meal.name" class="meal-img" />
             <div v-else class="meal-img-placeholder">
               <span class="material-symbols-outlined">restaurant</span>
             </div>
-            <span class="day-label-badge">{{ day.day }}</span>
+            <span
+              class="meal-type-badge"
+              :class="'meal-type-badge--' + meal.mealType"
+            >{{ capitalize(meal.mealType) }}</span>
           </div>
-          <div class="day-card-body">
-            <div class="meal-name">{{ day.name }}</div>
+          <div class="meal-card-body">
+            <div class="meal-name">{{ meal.name }}</div>
             <div class="meal-calories">
               <span class="material-symbols-outlined">local_fire_department</span>
-              {{ day.calories }} cal
+              {{ meal.calories }} cal
             </div>
-            <span class="workout-tag" v-if="day.workoutTag">{{ day.workoutTag }}</span>
           </div>
         </div>
       </div>
 
       <!-- Detail Modal -->
-      <div v-if="detailDay" class="overlay" @click.self="closeDetail">
+      <div v-if="detailMeal" class="overlay" @click.self="closeDetail">
         <div class="detail-modal">
           <button class="detail-close" @click="closeDetail">
             <span class="material-symbols-outlined">close</span>
           </button>
 
           <div class="detail-image">
-            <img v-if="detailDay.imageUrl" :src="detailDay.imageUrl" :alt="detailDay.name" class="detail-img" />
+            <img v-if="detailMeal.imageUrl" :src="detailMeal.imageUrl" :alt="detailMeal.name" class="detail-img" />
             <div v-else class="detail-img-placeholder">
               <span class="material-symbols-outlined">restaurant</span>
             </div>
           </div>
 
           <div class="detail-content">
-            <div class="detail-day-label">{{ detailDay.day }}</div>
-            <h2 class="detail-meal-name">{{ detailDay.name }}</h2>
+            <div
+              class="detail-meal-type"
+              :class="'detail-meal-type--' + detailMeal.mealType"
+            >{{ capitalize(detailMeal.mealType) }}</div>
+            <h2 class="detail-meal-name">{{ detailMeal.name }}</h2>
 
             <div class="macro-row">
               <div class="macro-stat">
                 <span class="macro-label">Protein</span>
-                <span class="macro-value">{{ detailDay.macros?.protein || 0 }}g</span>
+                <span class="macro-value">{{ detailMeal.macros?.protein || 0 }}g</span>
                 <div class="macro-bar-track">
                   <div class="macro-bar macro-bar-protein"
-                    :style="{ width: ((detailDay.macros?.protein || 0) / maxMacro(detailDay) * 100) + '%' }"></div>
+                    :style="{ width: ((detailMeal.macros?.protein || 0) / maxMacro(detailMeal) * 100) + '%' }"></div>
                 </div>
               </div>
               <div class="macro-stat">
                 <span class="macro-label">Carbs</span>
-                <span class="macro-value">{{ detailDay.macros?.carbs || 0 }}g</span>
+                <span class="macro-value">{{ detailMeal.macros?.carbs || 0 }}g</span>
                 <div class="macro-bar-track">
                   <div class="macro-bar macro-bar-carbs"
-                    :style="{ width: ((detailDay.macros?.carbs || 0) / maxMacro(detailDay) * 100) + '%' }"></div>
+                    :style="{ width: ((detailMeal.macros?.carbs || 0) / maxMacro(detailMeal) * 100) + '%' }"></div>
                 </div>
               </div>
               <div class="macro-stat">
                 <span class="macro-label">Fat</span>
-                <span class="macro-value">{{ detailDay.macros?.fat || 0 }}g</span>
+                <span class="macro-value">{{ detailMeal.macros?.fat || 0 }}g</span>
                 <div class="macro-bar-track">
                   <div class="macro-bar macro-bar-fat"
-                    :style="{ width: ((detailDay.macros?.fat || 0) / maxMacro(detailDay) * 100) + '%' }"></div>
+                    :style="{ width: ((detailMeal.macros?.fat || 0) / maxMacro(detailMeal) * 100) + '%' }"></div>
                 </div>
               </div>
               <div class="macro-stat">
                 <span class="macro-label">Calories</span>
-                <span class="macro-value">{{ detailDay.calories }}</span>
+                <span class="macro-value">{{ detailMeal.calories }}</span>
                 <div class="macro-bar-track">
                   <div class="macro-bar macro-bar-calories" style="width: 100%"></div>
                 </div>
               </div>
             </div>
 
-            <div class="detail-section" v-if="detailDay.ingredients && detailDay.ingredients.length">
+            <div class="detail-section" v-if="detailMeal.ingredients && detailMeal.ingredients.length">
               <h3 class="detail-section-title">
                 <span class="material-symbols-outlined">format_list_bulleted</span>
                 Ingredients
               </h3>
               <ul class="ingredient-list">
-                <li v-for="(item, i) in detailDay.ingredients" :key="i" class="ingredient-item">{{ item }}</li>
+                <li v-for="(item, i) in detailMeal.ingredients" :key="i" class="ingredient-item">{{ item }}</li>
               </ul>
             </div>
 
-            <div class="detail-section" v-if="detailDay.instructions">
+            <div class="detail-section" v-if="detailMeal.instructions">
               <h3 class="detail-section-title">
                 <span class="material-symbols-outlined">menu_book</span>
                 Instructions
               </h3>
-              <div class="instructions">{{ detailDay.instructions }}</div>
-            </div>
-
-            <div class="detail-section" v-if="detailDay.workoutTag">
-              <span class="workout-tag workout-tag-lg">
-                <span class="material-symbols-outlined">fitness_center</span>
-                {{ detailDay.workoutTag }}
-              </span>
+              <div class="instructions">{{ detailMeal.instructions }}</div>
             </div>
           </div>
         </div>

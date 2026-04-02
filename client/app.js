@@ -4,18 +4,17 @@ createApp({
   data() {
     return {
       apiUrl: 'http://localhost:8080',
-      screen: 'profile', // 'profile' | 'chat' | 'loading' | 'board'
-
-      days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+      screen: 'profile', // 'profile' | 'workout' | 'loading' | 'board'
 
       profile: { height: '', weight: '', age: '', sex: '' },
-      workouts: { Mon: '', Tue: '', Wed: '', Thu: '', Fri: '', Sat: '', Sun: '' },
+      userId: null,
+
+      workouts: { swim: 0, bike: 0, run: 0, lift: 0 }, // minutes
       foodPreference: '',
 
       suggestions: [
         'High Protein', 'Low Carb', 'Mediterranean', 'Vegetarian',
-        'Quick Meals', 'Comfort Food', 'Asian', 'Budget Friendly',
-        'No Dairy', 'No Gluten', 'Spicy', 'Meal Prep Friendly',
+        'Quick Meals', 'No Dairy', 'No Gluten', 'Spicy',
       ],
 
       errors: {},
@@ -24,34 +23,64 @@ createApp({
 
       statusMessage: 'Initializing…',
       plan: null,
-      userId: null,
-      detailDay: null,
+      detailMeal: null,
     };
   },
 
   mounted() {
     try {
-      const saved = JSON.parse(localStorage.getItem('nourishweek_profile') || 'null');
+      const saved = JSON.parse(localStorage.getItem('nw_profile') || 'null');
       if (saved) {
         this.profile = { height: saved.height, weight: saved.weight, age: saved.age, sex: saved.sex };
         this.userId  = saved.userId || null;
-        this.screen  = 'chat'; // skip profile screen
+        this.screen  = 'workout';
       }
     } catch {}
   },
 
   computed: {
     avgCalories() {
-      if (!this.plan || !this.plan.days.length) return 0;
-      const total = this.plan.days.reduce((s, d) => s + (d.calories || 0), 0);
-      return Math.round(total / this.plan.days.length);
+      return this.plan?.totalCalories || 0;
+    },
+
+    workoutSummary() {
+      const sports = [
+        { key: 'swim', icon: 'pool',           label: 'Swim' },
+        { key: 'bike', icon: 'directions_bike', label: 'Bike' },
+        { key: 'run',  icon: 'directions_run',  label: 'Run'  },
+        { key: 'lift', icon: 'fitness_center',  label: 'Lift' },
+      ];
+      return sports
+        .filter(s => this.workouts[s.key] > 0)
+        .map(s => ({ ...s, duration: this.formatDuration(this.workouts[s.key]) }));
     },
   },
 
   methods: {
+    // ── Formatting ────────────────────────────────────────────────────────────
+
+    formatDuration(min) {
+      if (!min || min === 0) return 'Off';
+      if (min < 60) return `${min} min`;
+      const h = Math.floor(min / 60);
+      const m = min % 60;
+      return m === 0 ? `${h}h` : `${h}h ${m}m`;
+    },
+
+    sliderStyle(value, color) {
+      const pct = (value / 240) * 100;
+      return `background: linear-gradient(to right, ${color} ${pct}%, var(--surface2) ${pct}%)`;
+    },
+
     // ── Navigation ────────────────────────────────────────────────────────────
 
-    goToChat() {
+    goToProfile() {
+      this.screen = 'profile';
+      this.errors = {};
+      this.globalError = '';
+    },
+
+    goToWorkout() {
       const e = {};
       if (!this.profile.height || this.profile.height <= 0) e.height = 'Required, must be > 0';
       if (!this.profile.weight || this.profile.weight <= 0) e.weight = 'Required, must be > 0';
@@ -59,22 +88,25 @@ createApp({
       if (!this.profile.sex) e.sex = 'Please select';
       this.errors = e;
       if (Object.keys(e).length) return;
-      this.screen = 'chat';
-    },
-
-    goToProfile() {
-      this.screen = 'profile';
-      this.errors = {};
+      this.screen = 'workout';
     },
 
     clearProfile() {
-      localStorage.removeItem('nourishweek_profile');
-      this.profile = { height: '', weight: '', age: '', sex: '' };
-      this.userId  = null;
-      this.plan    = null;
-      this.errors  = {};
+      localStorage.removeItem('nw_profile');
+      this.profile     = { height: '', weight: '', age: '', sex: '' };
+      this.userId      = null;
+      this.plan        = null;
+      this.errors      = {};
       this.globalError = '';
-      this.screen  = 'profile';
+      this.screen      = 'profile';
+    },
+
+    regenerate() {
+      this.plan        = null;
+      this.errors      = {};
+      this.globalError = '';
+      this.generating  = false;
+      this.screen      = 'workout';
     },
 
     addSuggestion(chip) {
@@ -90,19 +122,18 @@ createApp({
 
     async generate() {
       const e = {};
-      const hasWorkout = this.days.some(d => this.workouts[d].trim());
-      if (!hasWorkout) e.workouts = 'Enter at least one workout';
+      const hasWorkout = Object.values(this.workouts).some(v => v > 0);
+      if (!hasWorkout) e.workouts = 'Set at least one workout duration';
       if (!this.foodPreference.trim()) e.foodPreference = 'Tell us what you want to eat';
       this.errors = e;
       if (Object.keys(e).length) return;
 
-      this.generating = true;
-      this.globalError = '';
-      this.screen = 'loading';
+      this.generating    = true;
+      this.globalError   = '';
+      this.screen        = 'loading';
       this.statusMessage = 'Initializing…';
 
       try {
-        // Reuse saved userId if we already have one, otherwise create a new user
         if (!this.userId) {
           const userRes = await fetch(`${this.apiUrl}/users`, {
             method: 'POST',
@@ -112,34 +143,34 @@ createApp({
           const userData = await userRes.json();
           if (!userRes.ok) throw new Error(userData.error);
           this.userId = userData._id;
-          localStorage.setItem('nourishweek_profile', JSON.stringify({ ...this.profile, userId: this.userId }));
+          localStorage.setItem('nw_profile', JSON.stringify({ ...this.profile, userId: this.userId }));
         }
 
-        await this.streamMealPlan();
+        await this.streamDailyPlan();
       } catch (err) {
         this.globalError = err.message;
-        this.screen = 'chat';
-        this.generating = false;
+        this.screen      = 'workout';
+        this.generating  = false;
       }
     },
 
-    streamMealPlan() {
+    streamDailyPlan() {
       return new Promise((resolve, reject) => {
-        fetch(`${this.apiUrl}/meal-plans`, {
+        fetch(`${this.apiUrl}/daily-plans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            userId: this.userId,
-            workouts: this.workouts,
+            userId:         this.userId,
+            workouts:       this.workouts,
             foodPreference: this.foodPreference,
           }),
         }).then(response => {
           if (!response.ok) {
             return response.json().then(d => reject(new Error(d.error || 'Server error')));
           }
-          const reader = response.body.getReader();
+          const reader  = response.body.getReader();
           const decoder = new TextDecoder();
-          let buffer = '';
+          let buffer    = '';
 
           const read = () => {
             reader.read().then(({ done, value }) => {
@@ -169,30 +200,25 @@ createApp({
     },
 
     async loadPlan(planId) {
-      const res = await fetch(`${this.apiUrl}/meal-plans/${planId}`);
+      const res  = await fetch(`${this.apiUrl}/daily-plans/${planId}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      this.plan = data;
+      this.plan       = data;
       this.generating = false;
-      this.screen = 'board';
-    },
-
-    regenerate() {
-      this.screen = 'chat';
-      this.plan = null;
-      this.userId = null;
-      this.errors = {};
-      this.globalError = '';
-      this.generating = false;
+      this.screen     = 'board';
     },
 
     // ── Board ─────────────────────────────────────────────────────────────────
 
-    openDetail(day) { this.detailDay = day; },
-    closeDetail()   { this.detailDay = null; },
+    openDetail(meal) { this.detailMeal = meal; },
+    closeDetail()    { this.detailMeal = null; },
 
-    maxMacro(day) {
-      return Math.max(day.macros?.protein || 0, day.macros?.carbs || 0, day.macros?.fat || 0, 1);
+    maxMacro(meal) {
+      return Math.max(meal.macros?.protein || 0, meal.macros?.carbs || 0, meal.macros?.fat || 0, 1);
+    },
+
+    capitalize(str) {
+      return str ? str.charAt(0).toUpperCase() + str.slice(1) : '';
     },
   },
 }).mount('#app');
