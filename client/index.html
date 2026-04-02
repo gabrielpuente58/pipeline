@@ -1,255 +1,361 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Pipeline</title>
-    <link rel="stylesheet" href="styles.css" />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
-  </head>
-  <body>
-    <div id="app" class="layout">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NourishWeek</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+</head>
+<body>
+  <div id="app">
 
-      <!-- ── SIDEBAR ── -->
-      <aside class="sidebar">
-        <div class="sidebar-logo">
-          <span class="logo-mark">◈</span>
-          <span class="logo-text">Pipeline</span>
+    <!-- ══ SCREEN 1: PROFILE ══ -->
+    <div v-if="screen === 'profile'" class="profile-screen">
+      <div class="onboard-logo">
+        <span class="material-symbols-outlined logo-icon">restaurant</span>
+        <span class="logo-word">Nourish<span class="logo-accent">Week</span></span>
+      </div>
+      <p class="onboard-tagline">Your AI-powered weekly meal planner</p>
+
+      <div class="step-indicator">
+        <div class="step active">
+          <span class="step-num">1</span>
+          <span class="step-label">Your Profile</span>
         </div>
-
-        <nav class="sidebar-nav">
-          <button :class="['nav-item', { active: activeTab === 'applications' }]" @click="activeTab = 'applications'">
-            <span class="material-symbols-outlined">work</span>
-            Applications
-          </button>
-        </nav>
-
-        <div class="sidebar-footer">
-          <a v-if="!gmailConnected" href="http://localhost:8080/auth/gmail" class="gmail-pill off">
-            <span class="dot"></span> Connect Gmail
-          </a>
-          <div v-else class="gmail-pill on">
-            <span class="dot"></span> Gmail connected
-          </div>
-        </div>
-      </aside>
-
-      <!-- ── MAIN ── -->
-      <main class="content">
-        <div v-if="message" :class="['toast', messageType]">{{ message }}</div>
-
-        <!-- ══ APPLICATIONS ══ -->
-        <section v-show="activeTab === 'applications'">
-          <div class="page-header">
-            <h1>Applications</h1>
-            <div class="page-actions">
-              <button class="btn-secondary" @click="scanInbox" :disabled="scanning">
-                <span class="material-symbols-outlined">inbox</span>
-                {{ scanning ? 'Scanning…' : 'Scan Inbox' }}
-              </button>
-              <button class="btn-primary" @click="openModal(null)">
-                <span class="material-symbols-outlined">add</span> Add
-              </button>
-            </div>
-          </div>
-
-          <!-- Sub-tab switcher -->
-          <div class="app-view-toggle">
-            <button :class="['app-view-btn', { active: !appView || appView === 'dashboard' }]" @click="appView = 'dashboard'">
-              <span class="material-symbols-outlined">grid_view</span> Dashboard
-            </button>
-            <button :class="['app-view-btn', { active: appView === 'pipeline' }]" @click="appView = 'pipeline'">
-              <span class="material-symbols-outlined">view_kanban</span> Pipeline
-            </button>
-          </div>
-
-          <div v-if="upcomingInterviews.length" class="interviews-banner">
-            <span class="material-symbols-outlined">event</span>
-            <span>
-              <strong>Upcoming:</strong>
-              <span v-for="(app, i) in upcomingInterviews" :key="app._id">
-                {{ app.company }} — {{ fmtDate(app.interviewDate) }}<span v-if="i < upcomingInterviews.length - 1">, </span>
-              </span>
-            </span>
-          </div>
-
-          <div v-if="loading" class="empty-state">
-            <span class="material-symbols-outlined spin">progress_activity</span>
-          </div>
-
-          <!-- ── Dashboard card grid ── -->
-          <template v-else-if="!appView || appView === 'dashboard'">
-            <div v-if="applications.length === 0" class="empty-state">
-              <span class="material-symbols-outlined">work_outline</span>
-              <p>No applications yet. Click <strong>Add</strong> to get started.</p>
-            </div>
-            <div v-else class="app-grid">
-              <div class="app-card" v-for="app in applications" :key="app._id">
-                <div class="app-card-header">
-                  <span class="app-card-company">{{ app.company }}</span>
-                  <span :class="['status-chip', `chip-${app.status}`]">{{ app.status }}</span>
-                </div>
-                <div class="app-card-body">
-                  <div class="app-card-position">{{ app.position }}</div>
-                  <div v-if="app.location" class="app-card-location">
-                    <span class="material-symbols-outlined">location_on</span>
-                    {{ app.location }}
-                  </div>
-                  <div class="app-card-date">
-                    <span class="material-symbols-outlined">calendar_today</span>
-                    {{ fmtDate(app.appliedDate) }}
-                  </div>
-                  <div v-if="app.interviewDate" :class="['app-card-interview', isUpcoming(app.interviewDate) ? 'upcoming' : '']">
-                    <span class="material-symbols-outlined">event</span>
-                    Interview: {{ fmtDate(app.interviewDate) }}
-                  </div>
-                </div>
-                <div class="app-card-actions">
-                  <button class="card-link" @click="openModal(app)" title="Edit">
-                    <span class="material-symbols-outlined">edit</span> Edit
-                  </button>
-                  <button class="card-del" @click="deleteApp(app._id)" title="Delete">
-                    <span class="material-symbols-outlined">delete</span>
-                  </button>
-                </div>
-                <div v-if="app.emailSummary" class="app-card-summary">
-                  <span class="material-symbols-outlined">summarize</span>
-                  <span>{{ app.emailSummary }}</span>
-                </div>
-                <button class="card-summary-btn" @click.stop="fetchEmailSummary(app)" title="Get email summary">
-                  <span class="material-symbols-outlined">mark_email_read</span>
-                  {{ app.emailSummary ? 'Refresh' : 'Email summary' }}
-                </button>
-              </div>
-            </div>
-          </template>
-
-          <!-- ── Pipeline (Kanban) ── -->
-          <div v-else class="kanban">
-            <div class="kanban-col" v-for="s in statusList" :key="s.value">
-              <div class="kanban-col-header">
-                <span :class="['col-dot', `c-${s.value}`]"></span>
-                <span class="col-title">{{ s.label }}</span>
-                <span class="col-count">{{ countByStatus(s.value) }}</span>
-              </div>
-              <div class="kanban-col-body"
-                :data-col="s.value"
-                :class="{ 'drag-over': dragOverCol === s.value }"
-                @dragover.prevent="dragOver($event)"
-                @dragleave="dragLeave($event)"
-                @drop="drop(s.value, $event)">
-                <div class="kanban-card"
-                  v-for="app in byStatus(s.value)" :key="app._id"
-                  draggable="true"
-                  :class="{ dragging: draggingApp && draggingApp._id === app._id }"
-                  @dragstart="dragStart(app)"
-                  @dragend="dragEnd"
-                  @click="openModal(app)">
-                  <div class="card-company">{{ app.company }}</div>
-                  <div class="card-position">{{ app.position }}</div>
-                  <div class="card-meta">
-                    <span class="card-date">{{ fmtDate(app.appliedDate) }}</span>
-                    <span v-if="app.interviewDate" :class="['card-interview', isUpcoming(app.interviewDate) ? 'upcoming' : '']">
-                      <span class="material-symbols-outlined">event</span>
-                      {{ fmtDate(app.interviewDate) }}
-                    </span>
-                  </div>
-                  <div class="card-actions" @click.stop>
-                    <button class="card-del" @click="deleteApp(app._id)" title="Delete">
-                      <span class="material-symbols-outlined">delete</span>
-                    </button>
-                  </div>
-                </div>
-                <button class="add-card" @click="openModalWithStatus(s.value)">
-                  <span class="material-symbols-outlined">add</span> Add
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-      </main>
-
-      <!-- ── MODAL ── -->
-      <div v-if="showModal" class="overlay" @click.self="closeModal">
-        <div class="modal">
-          <div class="modal-header">
-            <h2>{{ editing ? 'Edit Application' : 'New Application' }}</h2>
-            <button class="card-del" @click="closeModal">
-              <span class="material-symbols-outlined">close</span>
-            </button>
-          </div>
-          <form @submit.prevent="saveApp" class="modal-form">
-            <div class="field-row">
-              <div class="field">
-                <label>Company *</label>
-                <input v-model="form.company" :class="{ invalid: errors.company }" placeholder="Google" />
-                <span class="err" v-if="errors.company">{{ errors.company }}</span>
-              </div>
-              <div class="field">
-                <label>Position *</label>
-                <input v-model="form.position" :class="{ invalid: errors.position }" placeholder="Software Engineer" />
-                <span class="err" v-if="errors.position">{{ errors.position }}</span>
-              </div>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label>Status</label>
-                <select v-model="form.status">
-                  <option v-for="s in statusList" :key="s.value" :value="s.value">{{ s.label }}</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>Applied Date *</label>
-                <input type="date" v-model="form.appliedDate" :class="{ invalid: errors.appliedDate }" />
-                <span class="err" v-if="errors.appliedDate">{{ errors.appliedDate }}</span>
-              </div>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label>Location</label>
-                <input v-model="form.location" placeholder="Remote, New York, NY…" />
-              </div>
-              <div class="field">
-                <label>Salary</label>
-                <input v-model="form.salary" placeholder="$120,000" />
-              </div>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label>Interview Date</label>
-                <input type="date" v-model="form.interviewDate" />
-              </div>
-              <div class="field">
-                <label>Job URL</label>
-                <input type="url" v-model="form.jobUrl" placeholder="https://..." />
-              </div>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label>Contact Name</label>
-                <input v-model="form.contactName" placeholder="Recruiter name" />
-              </div>
-              <div class="field">
-                <label>Contact Email</label>
-                <input type="email" v-model="form.contactEmail" placeholder="recruiter@co.com" />
-              </div>
-            </div>
-            <div class="field">
-              <label>Notes</label>
-              <textarea v-model="form.notes" rows="3" placeholder="Referral, interview notes…"></textarea>
-            </div>
-            <div class="modal-footer">
-              <button type="button" class="btn-ghost" @click="closeModal">Cancel</button>
-              <button type="submit" class="btn-primary" :disabled="saving">{{ saving ? 'Saving…' : 'Save' }}</button>
-            </div>
-          </form>
+        <div class="step-line"></div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <span class="step-label">Food Preferences</span>
         </div>
       </div>
 
+      <div v-if="globalError" class="global-error">
+        <span class="material-symbols-outlined">error</span>
+        {{ globalError }}
+      </div>
+
+      <div class="onboard-card">
+        <h2 class="card-heading">Tell us about yourself</h2>
+        <p class="card-sub">We'll calculate your daily calorie target using the Mifflin-St Jeor equation.</p>
+
+        <div class="profile-fields">
+          <div class="field-row">
+            <div class="field">
+              <label class="field-label">Height (cm)</label>
+              <input
+                class="field-input"
+                :class="{ invalid: errors.height }"
+                type="number"
+                v-model.number="profile.height"
+                placeholder="e.g. 175"
+                min="1"
+              />
+              <span class="err" v-if="errors.height">{{ errors.height }}</span>
+            </div>
+            <div class="field">
+              <label class="field-label">Weight (kg)</label>
+              <input
+                class="field-input"
+                :class="{ invalid: errors.weight }"
+                type="number"
+                v-model.number="profile.weight"
+                placeholder="e.g. 70"
+                min="1"
+              />
+              <span class="err" v-if="errors.weight">{{ errors.weight }}</span>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label class="field-label">Age</label>
+              <input
+                class="field-input"
+                :class="{ invalid: errors.age }"
+                type="number"
+                v-model.number="profile.age"
+                placeholder="e.g. 28"
+                min="1"
+              />
+              <span class="err" v-if="errors.age">{{ errors.age }}</span>
+            </div>
+            <div class="field">
+              <label class="field-label">Sex</label>
+              <div class="radio-group" :class="{ invalid: errors.sex }">
+                <label class="radio-label">
+                  <input type="radio" v-model="profile.sex" value="male" />
+                  <span class="radio-text">Male</span>
+                </label>
+                <label class="radio-label">
+                  <input type="radio" v-model="profile.sex" value="female" />
+                  <span class="radio-text">Female</span>
+                </label>
+              </div>
+              <span class="err" v-if="errors.sex">{{ errors.sex }}</span>
+            </div>
+          </div>
+        </div>
+
+        <button class="btn-continue" @click="goToChat">
+          Continue
+          <span class="material-symbols-outlined">arrow_forward</span>
+        </button>
+      </div>
     </div>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <script src="app.js"></script>
-  </body>
+
+    <!-- ══ SCREEN 2: CHAT / PREFERENCES ══ -->
+    <div v-if="screen === 'chat'" class="chat-screen">
+      <div class="chat-header">
+        <button class="btn-back" @click="goToProfile">
+          <span class="material-symbols-outlined">arrow_back</span>
+          Back
+        </button>
+        <div class="onboard-logo small">
+          <span class="material-symbols-outlined logo-icon">restaurant</span>
+          <span class="logo-word">Nourish<span class="logo-accent">Week</span></span>
+        </div>
+        <div class="step-indicator compact">
+          <div class="step">
+            <span class="step-num done">
+              <span class="material-symbols-outlined">check</span>
+            </span>
+          </div>
+          <div class="step-line filled"></div>
+          <div class="step active">
+            <span class="step-num">2</span>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="globalError" class="global-error chat-error">
+        <span class="material-symbols-outlined">error</span>
+        {{ globalError }}
+      </div>
+
+      <div class="chat-body">
+
+        <!-- Food preference input -->
+        <div class="chat-section">
+          <h2 class="chat-heading">What are you craving this week?</h2>
+          <p class="chat-sub">Describe the food you want — cuisine style, dietary needs, anything.</p>
+
+          <div class="chat-input-wrap" :class="{ invalid: errors.foodPreference }">
+            <span class="chat-input-icon material-symbols-outlined">chat</span>
+            <textarea
+              class="chat-textarea"
+              v-model="foodPreference"
+              placeholder="e.g. Mediterranean food, high protein, no dairy, something quick to prep…"
+              rows="3"
+            ></textarea>
+          </div>
+          <span class="err" v-if="errors.foodPreference">{{ errors.foodPreference }}</span>
+
+          <!-- Suggestion chips -->
+          <div class="chip-row">
+            <button
+              class="chip"
+              v-for="chip in suggestions"
+              :key="chip"
+              @click="addSuggestion(chip)"
+              type="button"
+            >
+              <span class="material-symbols-outlined">add</span>
+              {{ chip }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Workout fields -->
+        <div class="chat-section">
+          <h3 class="section-heading">
+            <span class="material-symbols-outlined">fitness_center</span>
+            This Week's Workouts
+          </h3>
+          <p class="chat-sub">We'll adjust calories on heavy training days.</p>
+
+          <div class="workout-fields">
+            <div class="workout-field" v-for="day in days" :key="day">
+              <label class="workout-label">{{ day }}</label>
+              <input
+                class="workout-input"
+                :class="{ invalid: day === 'Mon' && errors.workouts }"
+                v-model="workouts[day]"
+                :placeholder="
+                  day === 'Mon' ? 'e.g. Leg day, 45min' :
+                  day === 'Tue' ? 'e.g. Upper body' :
+                  day === 'Wed' ? 'e.g. Rest' :
+                  day === 'Thu' ? 'e.g. HIIT, 20min' :
+                  day === 'Fri' ? 'e.g. Core + yoga' :
+                  day === 'Sat' ? 'e.g. Long run, 60min' :
+                  'e.g. Active recovery'
+                "
+                type="text"
+              />
+            </div>
+            <span class="err workout-err" v-if="errors.workouts">{{ errors.workouts }}</span>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="chat-footer">
+        <button class="btn-generate" @click="generate" :disabled="generating">
+          <span class="material-symbols-outlined" v-if="!generating">auto_awesome</span>
+          <span class="material-symbols-outlined spin" v-else>progress_activity</span>
+          {{ generating ? 'Planning your week…' : 'Generate my week' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- ══ SCREEN 3: LOADING ══ -->
+    <div v-if="screen === 'loading'" class="loading-screen">
+      <div class="loading-visual">
+        <div class="loading-ring ring-1"></div>
+        <div class="loading-ring ring-2"></div>
+        <div class="loading-ring ring-3"></div>
+        <span class="loading-icon material-symbols-outlined">restaurant</span>
+      </div>
+      <div class="loading-status">
+        <p>{{ statusMessage }}</p>
+      </div>
+      <div class="loading-hint">
+        <p>This may take a moment</p>
+      </div>
+    </div>
+
+    <!-- ══ SCREEN 4: WEEK BOARD ══ -->
+    <div v-if="screen === 'board'" class="board-screen">
+      <header class="app-header">
+        <span class="app-logo">
+          <span class="material-symbols-outlined">restaurant</span>
+          Nourish<span class="logo-accent">Week</span>
+        </span>
+        <div class="summary-bar">
+          <span class="summary-stat">
+            <span class="material-symbols-outlined">calendar_month</span>
+            {{ plan.days.length }} meals planned
+          </span>
+          <span class="summary-stat">
+            <span class="material-symbols-outlined">local_fire_department</span>
+            ~{{ avgCalories }} cal/day avg
+          </span>
+          <button class="btn-regenerate" @click="regenerate">
+            <span class="material-symbols-outlined">refresh</span>
+            Regenerate
+          </button>
+        </div>
+      </header>
+
+      <div class="week-grid">
+        <div
+          class="day-card"
+          v-for="day in plan.days"
+          :key="day.day"
+          @click="openDetail(day)"
+        >
+          <div class="day-card-image">
+            <img v-if="day.imageUrl" :src="day.imageUrl" :alt="day.name" class="meal-img" />
+            <div v-else class="meal-img-placeholder">
+              <span class="material-symbols-outlined">restaurant</span>
+            </div>
+            <span class="day-label-badge">{{ day.day }}</span>
+          </div>
+          <div class="day-card-body">
+            <div class="meal-name">{{ day.name }}</div>
+            <div class="meal-calories">
+              <span class="material-symbols-outlined">local_fire_department</span>
+              {{ day.calories }} cal
+            </div>
+            <span class="workout-tag" v-if="day.workoutTag">{{ day.workoutTag }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Detail Modal -->
+      <div v-if="detailDay" class="overlay" @click.self="closeDetail">
+        <div class="detail-modal">
+          <button class="detail-close" @click="closeDetail">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+
+          <div class="detail-image">
+            <img v-if="detailDay.imageUrl" :src="detailDay.imageUrl" :alt="detailDay.name" class="detail-img" />
+            <div v-else class="detail-img-placeholder">
+              <span class="material-symbols-outlined">restaurant</span>
+            </div>
+          </div>
+
+          <div class="detail-content">
+            <div class="detail-day-label">{{ detailDay.day }}</div>
+            <h2 class="detail-meal-name">{{ detailDay.name }}</h2>
+
+            <div class="macro-row">
+              <div class="macro-stat">
+                <span class="macro-label">Protein</span>
+                <span class="macro-value">{{ detailDay.macros?.protein || 0 }}g</span>
+                <div class="macro-bar-track">
+                  <div class="macro-bar macro-bar-protein"
+                    :style="{ width: ((detailDay.macros?.protein || 0) / maxMacro(detailDay) * 100) + '%' }"></div>
+                </div>
+              </div>
+              <div class="macro-stat">
+                <span class="macro-label">Carbs</span>
+                <span class="macro-value">{{ detailDay.macros?.carbs || 0 }}g</span>
+                <div class="macro-bar-track">
+                  <div class="macro-bar macro-bar-carbs"
+                    :style="{ width: ((detailDay.macros?.carbs || 0) / maxMacro(detailDay) * 100) + '%' }"></div>
+                </div>
+              </div>
+              <div class="macro-stat">
+                <span class="macro-label">Fat</span>
+                <span class="macro-value">{{ detailDay.macros?.fat || 0 }}g</span>
+                <div class="macro-bar-track">
+                  <div class="macro-bar macro-bar-fat"
+                    :style="{ width: ((detailDay.macros?.fat || 0) / maxMacro(detailDay) * 100) + '%' }"></div>
+                </div>
+              </div>
+              <div class="macro-stat">
+                <span class="macro-label">Calories</span>
+                <span class="macro-value">{{ detailDay.calories }}</span>
+                <div class="macro-bar-track">
+                  <div class="macro-bar macro-bar-calories" style="width: 100%"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-section" v-if="detailDay.ingredients && detailDay.ingredients.length">
+              <h3 class="detail-section-title">
+                <span class="material-symbols-outlined">format_list_bulleted</span>
+                Ingredients
+              </h3>
+              <ul class="ingredient-list">
+                <li v-for="(item, i) in detailDay.ingredients" :key="i" class="ingredient-item">{{ item }}</li>
+              </ul>
+            </div>
+
+            <div class="detail-section" v-if="detailDay.instructions">
+              <h3 class="detail-section-title">
+                <span class="material-symbols-outlined">menu_book</span>
+                Instructions
+              </h3>
+              <div class="instructions">{{ detailDay.instructions }}</div>
+            </div>
+
+            <div class="detail-section" v-if="detailDay.workoutTag">
+              <span class="workout-tag workout-tag-lg">
+                <span class="material-symbols-outlined">fitness_center</span>
+                {{ detailDay.workoutTag }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="app.js"></script>
+</body>
 </html>

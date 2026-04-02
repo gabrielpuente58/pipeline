@@ -3,9 +3,11 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
-const { google } = require("googleapis");
-const { Ollama } = require("ollama");
+const { ChatOllama } = require("@langchain/ollama");
+const { HumanMessage, SystemMessage, ToolMessage } = require("@langchain/core/messages");
 const { StateGraph, START, END } = require("@langchain/langgraph");
+const { StructuredTool } = require("@langchain/core/tools");
+const { z } = require("zod");
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 
@@ -13,626 +15,556 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const MONGODB_URI    = process.env.MONGODB_URI    || "mongodb://localhost:27017";
-const DB_NAME        = process.env.DB_NAME        || "pipeline";
-const OLLAMA_HOST    = process.env.OLLAMA_HOST    || "http://golem:11434";
-const OLLAMA_MODEL   = process.env.OLLAMA_MODEL   || "gpt-oss:20b";
-const PORT           = process.env.PORT           || 8080;
-const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-const GOOGLE_REDIRECT_URI  = process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/auth/gmail/callback`;
+const MONGODB_URI    = process.env.MONGODB_URI       || "mongodb://localhost:27017";
+const DB_NAME        = process.env.DB_NAME           || "nourishweek";
+const PORT           = process.env.PORT              || 8080;
+const SPOONACULAR_KEY = process.env.SPOONACULAR_API_KEY;
+const OLLAMA_HOST    = process.env.OLLAMA_HOST       || "http://golem:11434";
+const OLLAMA_MODEL   = process.env.OLLAMA_MODEL      || "gpt-oss:20b";
 
-const ollama = new Ollama({ host: OLLAMA_HOST });
+const llm = new ChatOllama({
+  baseUrl: OLLAMA_HOST,
+  model:   OLLAMA_MODEL,
+  numCtx:  131072,
+});
 
 // ─── DATABASE ─────────────────────────────────────────────────────────────────
 
 mongoose
   .connect(`${MONGODB_URI}/${DB_NAME}`)
-  .then(() => {
-    console.log("Connected to MongoDB");
-    // seed one example application if the collection is empty
-    Application.countDocuments().then((n) => {
-      if (n === 0) {
-        Application.create({
-          company: "Google", position: "Software Engineer II",
-          status: "interviewing", appliedDate: new Date(Date.now() - 14 * 86400000),
-          notes: "Phone screen scheduled.", contactName: "Sarah Chen", contactEmail: "schen@google.com",
-        });
-      }
-    });
-  })
+  .then(() => console.log("Connected to MongoDB"))
   .catch((err) => console.error("MongoDB error:", err));
 
-// ─── SCHEMAS (all defined here — no separate model files) ─────────────────────
+// ─── SCHEMAS ──────────────────────────────────────────────────────────────────
 
-const Application = mongoose.model("Application", new mongoose.Schema({
-  company:      { type: String, required: [true, "Company is required"] },
-  position:     { type: String, required: [true, "Position is required"] },
-  status:       { type: String, enum: ["saved", "applied", "interviewing", "offer", "rejected", "ghosted"], default: "applied" },
-  appliedDate:  { type: Date,   required: [true, "Applied date is required"] },
-  location:      String,
-  salary:        String,
-  jobUrl:        String,
-  notes:         String,
-  contactName:   String,
-  contactEmail:  String,
-  interviewDate: Date,
-  emailSummary:  { type: String, default: null },
-}, { timestamps: true }));
+// User — stores biometric profile; calorieTarget is computed server-side
+const userSchema = new mongoose.Schema({
+  height: { type: Number, required: true, min: 1 }, // cm
+  weight: { type: Number, required: true, min: 1 }, // kg
+  age:    { type: Number, required: true, min: 1 },
+  sex:    { type: String, enum: ["male", "female"], required: true },
+  calorieTarget: { type: Number },
+});
 
-const FollowUp = mongoose.model("FollowUp", new mongoose.Schema({
-  applicationId: { type: mongoose.Schema.Types.ObjectId, ref: "Application", required: true },
-  subject:       { type: String, required: true },
-  body:          { type: String, required: true },
-  sent:          { type: Boolean, default: false },
-  draftedByAI:   { type: Boolean, default: false },
-  scheduledDate: { type: Date, default: null },
-  isReply:       { type: Boolean, default: false },
-}, { timestamps: true }));
+// Mifflin-St Jeor BMR (sedentary TDEE approximation) — computed before every save
+userSchema.pre("save", async function () {
+  const base = 10 * this.weight + 6.25 * this.height - 5 * this.age;
+  this.calorieTarget = this.sex === "male" ? base + 5 : base - 161;
+});
 
-const ActivityLog = mongoose.model("ActivityLog", new mongoose.Schema({
-  applicationId: mongoose.Schema.Types.ObjectId,
-  event:         { type: String, enum: ["status-change", "email-received", "follow-up-sent", "ai-scan", "created"], required: true },
-  description:   { type: String, required: true },
-  timestamp:     { type: Date, default: Date.now },
-}));
+const User = mongoose.model("User", userSchema);
 
-const GmailToken = mongoose.model("GmailToken", new mongoose.Schema({
-  access_token:  { type: String, required: true },
-  refresh_token: { type: String, required: true },
-  expiry_date:   Number,
-}));
-
-// ─── GMAIL ────────────────────────────────────────────────────────────────────
-
-function makeOAuthClient() {
-  return new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
-}
-
-async function getGmailClient() {
-  const token = await GmailToken.findOne();
-  if (!token) throw new Error("Gmail not connected");
-  const auth = makeOAuthClient();
-  auth.setCredentials({
-    access_token: token.access_token,
-    refresh_token: token.refresh_token,
-    expiry_date: token.expiry_date,
-  });
-  return google.gmail({ version: "v1", auth });
-}
-
-async function createCalendarEvent(auth, app) {
-  const calendar = google.calendar({ version: "v3", auth });
-  const start = new Date(app.interviewDate);
-  const end   = new Date(start.getTime() + 60 * 60 * 1000); // 1 hour
-  await calendar.events.insert({
-    calendarId: "primary",
-    requestBody: {
-      summary:     `Interview — ${app.company} (${app.position})`,
-      description: `Job application interview\nCompany: ${app.company}\nRole: ${app.position}${app.jobUrl ? '\nJob URL: ' + app.jobUrl : ''}`,
-      start: { dateTime: start.toISOString() },
-      end:   { dateTime: end.toISOString() },
+// MealPlan — one document per generated week plan, linked to a User
+const mealPlanSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
     },
-  });
-}
-
-// ─── AI AGENT ────────────────────────────────────────────────────────────────
-//
-// Triggered by POST /scan-inbox. Runs 5 nodes in order:
-//   scanEmails → classifyEmails → checkSilent → draftFollowUps → submitResults
-//
-// Two LLM tools define the structured output we expect from Ollama:
-
-const classifyTool = {
-  type: "function",
-  function: {
-    name: "classify_email",
-    description: "Classify a job application email thread",
-    parameters: {
-      type: "object",
-      properties: {
-        classification: { type: "string", enum: ["interview_request", "rejection", "offer", "no_response"] },
-        summary:        { type: "string", description: "One sentence summary of the email" },
+    days: [
+      {
+        day: {
+          type: String,
+          enum: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+          required: true,
+        },
+        workout:    String,
+        recipeId:   Number,
+        name:       String,
+        imageUrl:   String,
+        calories:   Number,
+        macros: {
+          protein: Number,
+          carbs:   Number,
+          fat:     Number,
+        },
+        workoutTag:   String, // e.g. "+carbs"
+        instructions: String,
+        ingredients:  [String],
       },
-      required: ["classification", "summary"],
-    },
+    ],
   },
+  { timestamps: true },
+);
+
+const MealPlan = mongoose.model("MealPlan", mealPlanSchema);
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+// Strip HTML tags from Spoonacular instruction strings
+function stripTags(html = "") {
+  return html.replace(/<[^>]+>/g, "").trim();
+}
+
+// Pull a named nutrient amount out of Spoonacular's nutrition.nutrients array
+function getNutrient(nutrients = [], name) {
+  const found = nutrients.find((n) => n.name === name);
+  return found ? Math.round(found.amount) : 0;
+}
+
+// ─── LANGGRAPH AGENT ──────────────────────────────────────────────────────────
+//
+// Triggered by POST /meal-plans.  The LLM drives tool selection via bindTools().
+// Nodes: planMeals (LLM) → searchRecipes | getRecipeDetails | calculateNutrition
+//        | savePlan → END
+// The routing function reads state.toolCalls[0].name to dispatch to the right node,
+// looping back to planMeals after each tool result until SaveMealPlan is called.
+
+// ─── REQUEST CONTEXT ─────────────────────────────────────────────────────────
+// Holds per-request data that tools need but the LLM shouldn't have to pass.
+// Safe for this single-server school project (not concurrent-request safe).
+
+const _ctx = {
+  calorieTargets: {},
+  workoutTags:    {},
+  workouts:       {},
+  userId:         "",
+  recipeDetails:  {}, // accumulated GetRecipeDetails results keyed by day
 };
 
-const draftTool = {
-  type: "function",
-  function: {
-    name: "draft_follow_up",
-    description: "Draft a follow-up email for a silent job application",
-    parameters: {
-      type: "object",
-      properties: {
-        subject: { type: "string" },
-        body:    { type: "string" },
-      },
-      required: ["subject", "body"],
-    },
-  },
-};
+// ─── TOOLS ────────────────────────────────────────────────────────────────────
+// Schemas are kept intentionally minimal — fewer fields = less chance the LLM
+// generates malformed JSON. Numbers that require computation live server-side.
 
-// Graph state — what gets passed between nodes
-const graphState = {
-  applications:    { value: (_, y) => y,          default: () => [] },
-  emailThreads:    { value: (_, y) => y,          default: () => [] },
-  classifications: { value: (x, y) => x.concat(y), default: () => [] },
-  silentApps:      { value: (_, y) => y,          default: () => [] },
-  followUpDrafts:  { value: (x, y) => x.concat(y), default: () => [] },
-};
+class SearchRecipesTool extends StructuredTool {
+  name        = "SearchRecipes";
+  description = "Search for a recipe for a specific day. The calorie range is determined automatically. Provide a food query inspired by the user's preferences.";
+  schema      = z.object({
+    day:   z.string().describe("Day of the week: Mon, Tue, Wed, Thu, Fri, Sat, or Sun"),
+    query: z.string().describe("Food or cuisine query e.g. 'Mediterranean chicken', 'vegetarian stir fry'"),
+  });
 
-// Node 1 — search Gmail for threads from tracked companies
-async function scanEmailsNode(state) {
-  let gmail;
-  try { gmail = await getGmailClient(); }
-  catch { console.log("Gmail not connected, skipping scan"); return { emailThreads: [] }; }
-
-  const threads = [];
-  for (const app of state.applications) {
-    const res = await gmail.users.threads
-      .list({ userId: "me", q: `"${app.company}" OR subject:"${app.position}"`, maxResults: 3 })
-      .catch(() => ({ data: {} }));
-
-    for (const t of res.data.threads || []) {
-      const data = await gmail.users.threads.get({ userId: "me", id: t.id }).catch(() => null);
-      if (!data) continue;
-      const content = (data.data.messages || []).map((m) => {
-        const subject = m.payload.headers?.find((h) => h.name === "Subject")?.value || "";
-        const from    = m.payload.headers?.find((h) => h.name === "From")?.value || "";
-        return `From: ${from}\nSubject: ${subject}\nSnippet: ${m.snippet}`;
-      }).join("\n---\n");
-      threads.push({ applicationId: app._id.toString(), company: app.company, position: app.position, content });
+  async _call({ day, query }) {
+    const target     = _ctx.calorieTargets[day] || 2000;
+    const minCal     = target - 200;
+    const maxCal     = target + 200;
+    try {
+      const url =
+        `https://api.spoonacular.com/recipes/complexSearch` +
+        `?apiKey=${SPOONACULAR_KEY}` +
+        `&number=1&addRecipeNutrition=true&type=main course` +
+        `&minCalories=${minCal}&maxCalories=${maxCal}` +
+        `&query=${encodeURIComponent(query)}`;
+      const res  = await fetch(url);
+      const data = await res.json();
+      const hit  = data.results?.[0];
+      return JSON.stringify({
+        day,
+        recipeId: hit?.id    ?? 0,
+        title:    hit?.title ?? "Balanced Meal",
+        image:    hit?.image ?? "",
+      });
+    } catch (err) {
+      console.error("SearchRecipes error:", err.message);
+      return JSON.stringify({ day, recipeId: 0, title: "Balanced Meal", image: "" });
     }
   }
-  console.log(`scanEmails: found ${threads.length} threads`);
-  return { emailThreads: threads };
 }
 
-// Node 2 — ask the LLM to classify each thread
-async function classifyEmailsNode(state) {
-  const classifications = [];
-  for (const thread of state.emailThreads) {
-    const res = await ollama.chat({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: "system", content: "Classify this job application email thread by calling classify_email. You MUST use one of these exact classification values: interview_request, rejection, offer, no_response. Do not use any other values." },
-        { role: "user",   content: `Company: ${thread.company}\nPosition: ${thread.position}\n\n${thread.content}` },
-      ],
-      tools: [classifyTool],
-      stream: false,
-    }).catch(() => null);
+class GetRecipeDetailsTool extends StructuredTool {
+  name        = "GetRecipeDetails";
+  description = "Get full ingredients, instructions, and nutrition for a recipe. Call this after SearchRecipes for each day using the recipeId returned.";
+  schema      = z.object({
+    day:      z.string().describe("Day of the week: Mon, Tue, Wed, Thu, Fri, Sat, or Sun"),
+    recipeId: z.number().int().describe("The recipeId number returned by SearchRecipes for this day"),
+  });
 
-    const tc = res?.message.tool_calls?.[0];
-    if (tc?.function.name === "classify_email") {
-      classifications.push({ applicationId: thread.applicationId, company: thread.company, ...tc.function.arguments });
-    }
-  }
-  console.log(`classifyEmails: classified ${classifications.length}`);
-  console.log("classifications:", JSON.stringify(classifications, null, 2));
-  return { classifications };
-}
-
-// Node 3 — find applications silent for 7+ days (no update)
-async function checkSilentNode(state) {
-  const cutoff = new Date(Date.now() - 7 * 86400000);
-  const silentApps = state.applications.filter(
-    (app) => !["offer", "rejected", "ghosted"].includes(app.status) && new Date(app.updatedAt) < cutoff
-  );
-  console.log(`checkSilent: ${silentApps.length} silent apps`);
-  return { silentApps };
-}
-
-// Node 4 — ask the LLM to draft a follow-up for each silent app
-async function draftFollowUpsNode(state) {
-  const followUpDrafts = [];
-  for (const app of state.silentApps) {
-    const days = Math.floor((Date.now() - new Date(app.updatedAt)) / 86400000);
-    const res = await ollama.chat({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: "system", content: "Draft a professional follow-up email by calling draft_follow_up." },
-        { role: "user",   content: `Company: ${app.company}\nPosition: ${app.position}\nApplied ${days} days ago\nContact: ${app.contactName || "Hiring Manager"}` },
-      ],
-      tools: [draftTool],
-      stream: false,
-    }).catch(() => null);
-
-    const tc = res?.message.tool_calls?.[0];
-    if (tc?.function.name === "draft_follow_up") {
-      followUpDrafts.push({ applicationId: app._id.toString(), ...tc.function.arguments });
-    }
-  }
-  console.log(`draftFollowUps: drafted ${followUpDrafts.length}`);
-  return { followUpDrafts };
-}
-
-// Node 5 — save all results to MongoDB
-async function submitResultsNode(state) {
-  const statusMap = { interview_request: "interviewing", offer: "offer", rejection: "rejected" };
-
-  for (const cls of state.classifications) {
-    const newStatus = statusMap[cls.classification];
-    if (newStatus) {
-      const doc = await Application.findById(cls.applicationId);
-      if (doc && doc.status !== newStatus) {
-        await Application.findByIdAndUpdate(cls.applicationId, { status: newStatus });
-        await ActivityLog.create({ applicationId: cls.applicationId, event: "status-change", description: `${cls.company}: ${cls.summary}` });
+  async _call({ day, recipeId }) {
+    let detail;
+    if (!recipeId || recipeId === 0) {
+      const target = _ctx.calorieTargets[day] || 2000;
+      detail = {
+        name: "Balanced Meal", imageUrl: "", ingredients: ["Protein", "Carbs", "Vegetables", "Healthy fats"],
+        instructions: "Prepare a balanced meal with your chosen ingredients.",
+        calories: target, macros: { protein: Math.round(target * 0.3 / 4), carbs: Math.round(target * 0.45 / 4), fat: Math.round(target * 0.25 / 9) },
+      };
+    } else {
+      try {
+        const res       = await fetch(`https://api.spoonacular.com/recipes/${recipeId}/information?apiKey=${SPOONACULAR_KEY}&includeNutrition=true`);
+        const data      = await res.json();
+        const nutrients = data.nutrition?.nutrients || [];
+        detail = {
+          name:         data.title || "Balanced Meal",
+          imageUrl:     data.image || "",
+          ingredients:  (data.extendedIngredients || []).map((i) => i.original),
+          instructions: stripTags(data.instructions || ""),
+          calories:     getNutrient(nutrients, "Calories"),
+          macros: {
+            protein: getNutrient(nutrients, "Protein"),
+            carbs:   getNutrient(nutrients, "Carbohydrates"),
+            fat:     getNutrient(nutrients, "Fat"),
+          },
+        };
+      } catch (err) {
+        console.error("GetRecipeDetails error:", err.message);
+        const target = _ctx.calorieTargets[day] || 2000;
+        detail = { name: "Balanced Meal", imageUrl: "", ingredients: [], instructions: "", calories: target, macros: { protein: 0, carbs: 0, fat: 0 } };
       }
     }
-    await ActivityLog.create({ applicationId: cls.applicationId, event: "email-received", description: `Email from ${cls.company}: ${cls.summary}` });
+    // Store in server-side context so SaveMealPlan can assemble the plan
+    _ctx.recipeDetails[day] = { ...detail, recipeId };
+    return JSON.stringify({ day, ...detail, recipeId });
   }
-
-  for (const draft of state.followUpDrafts) {
-    await FollowUp.create({ applicationId: draft.applicationId, subject: draft.subject, body: draft.body, draftedByAI: true });
-  }
-
-  // Build per-application email summaries from classifications and persist them
-  const summaryMap = {};
-  for (const cls of state.classifications) {
-    if (!summaryMap[cls.applicationId]) summaryMap[cls.applicationId] = [];
-    summaryMap[cls.applicationId].push(cls.summary);
-  }
-  for (const [appId, summaries] of Object.entries(summaryMap)) {
-    await Application.findByIdAndUpdate(appId, { emailSummary: summaries.join(" | ") });
-  }
-
-  await ActivityLog.create({
-    event: "ai-scan",
-    description: `Scan complete — ${state.emailThreads.length} threads found, ${state.classifications.length} classified, ${state.followUpDrafts.length} follow-ups drafted`,
-  });
-  return {};
 }
 
-// Wire the graph together
-const workflow = new StateGraph({ channels: graphState });
-workflow.addNode("scanEmails",     scanEmailsNode);
-workflow.addNode("classifyEmails", classifyEmailsNode);
-workflow.addNode("checkSilent",    checkSilentNode);
-workflow.addNode("draftFollowUps", draftFollowUpsNode);
-workflow.addNode("submitResults",  submitResultsNode);
+class CalculateNutritionTool extends StructuredTool {
+  name        = "CalculateNutrition";
+  description = "Verify the weekly meal plan meets calorie targets. Call this after GetRecipeDetails has been called for all 7 days. No arguments needed.";
+  schema      = z.object({});
 
-workflow.addEdge(START, "scanEmails");
-workflow.addEdge("scanEmails",     "classifyEmails");
-workflow.addEdge("classifyEmails", "checkSilent");
-workflow.addConditionalEdges("checkSilent",
-  (state) => state.silentApps.length > 0 ? "draftFollowUps" : "submitResults",
-  ["draftFollowUps", "submitResults"]
-);
-workflow.addEdge("draftFollowUps", "submitResults");
-workflow.addEdge("submitResults",  END);
+  async _call() {
+    const results = DAYS.map((day) => {
+      const detail = _ctx.recipeDetails[day];
+      const target = _ctx.calorieTargets[day] || 2000;
+      const calories = detail?.calories || 0;
+      return { day, calories, target, pass: Math.abs(calories - target) <= 350 };
+    });
+    return JSON.stringify({ pass: results.every((r) => r.pass), results });
+  }
+}
+
+class SaveMealPlanTool extends StructuredTool {
+  name        = "SaveMealPlan";
+  description = "Save the finalized 7-day meal plan to the database. Call this after CalculateNutrition. No arguments needed — the plan is assembled from the recipe details already collected.";
+  schema      = z.object({});
+
+  async _call() {
+    const days = DAYS.map((day) => {
+      const detail = _ctx.recipeDetails[day] || {};
+      return {
+        day,
+        workout:      _ctx.workouts[day]    || "",
+        recipeId:     detail.recipeId       || 0,
+        name:         detail.name           || "Balanced Meal",
+        imageUrl:     detail.imageUrl       || "",
+        calories:     detail.calories       || 0,
+        macros:       detail.macros         || { protein: 0, carbs: 0, fat: 0 },
+        workoutTag:   _ctx.workoutTags[day] || "",
+        instructions: detail.instructions   || "",
+        ingredients:  detail.ingredients    || [],
+      };
+    });
+    const plan = await MealPlan.create({ userId: _ctx.userId, days });
+    console.log("SaveMealPlan: created", plan._id.toString());
+    return JSON.stringify({ savedPlanId: plan._id.toString() });
+  }
+}
+
+// ─── TOOL INSTANCES ───────────────────────────────────────────────────────────
+
+const searchRecipesTool      = new SearchRecipesTool();
+const getRecipeDetailsTool   = new GetRecipeDetailsTool();
+const calculateNutritionTool = new CalculateNutritionTool();
+const saveMealPlanTool       = new SaveMealPlanTool();
+
+// ─── GRAPH STATE ──────────────────────────────────────────────────────────────
+
+const graphStateData = {
+  messages:   { value: (x, y) => x.concat(y), default: () => [] },
+  toolCalls:  { value: (x, y) => x.concat(y), default: () => [] },
+  result:     { value: (_x, y) => y,           default: () => null },
+  sendStatus: { value: (_x, y) => y,           default: () => null },
+};
+
+// ─── NODES ────────────────────────────────────────────────────────────────────
+
+// planMealsNode — the LLM node; called repeatedly until SaveMealPlan is chosen
+const llmWithTools = llm.bindTools([
+  searchRecipesTool,
+  getRecipeDetailsTool,
+  calculateNutritionTool,
+  saveMealPlanTool,
+]);
+
+async function planMealsNode(state) {
+  state.sendStatus?.("Planning your meals…");
+
+  let response, attempts = 0;
+  while (true) {
+    try {
+      response = await llmWithTools.invoke(state.messages);
+      break;
+    } catch (err) {
+      if (++attempts >= 3) throw err;
+      console.warn(`LLM attempt ${attempts} failed, retrying:`, err.message);
+    }
+  }
+
+  const calls = response.tool_calls || [];
+  console.log("LLM tool_calls:", calls.map((c) => `${c.name}(${JSON.stringify(c.args)})`));
+
+  if (!calls.length) {
+    console.warn("LLM returned no tool calls — re-prompting");
+    // Inject a nudge so the LLM sees it needs to keep going
+    const nudge = new HumanMessage(
+      "You must call a tool. Check the tool results above and call the next required tool now."
+    );
+    return { messages: [nudge], toolCalls: [] };
+  }
+
+  // Add the AI message (with tool_calls) so ToolMessages can be linked by tool_call_id
+  return {
+    messages:  [response],
+    toolCalls: calls,
+  };
+}
+
+async function searchRecipesNode(state) {
+  state.sendStatus?.("Finding recipes that fit your targets…");
+  const toolCall   = state.toolCalls.shift(); // consume head of queue
+  const toolResult = await searchRecipesTool.invoke(toolCall.args);
+  const message    = new ToolMessage({
+    content:      typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult),
+    name:         toolCall.name,
+    tool_call_id: toolCall.id,
+  });
+  return { messages: [message] };
+}
+
+async function getRecipeDetailsNode(state) {
+  state.sendStatus?.("Getting recipe details…");
+  const toolCall   = state.toolCalls.shift();
+  const toolResult = await getRecipeDetailsTool.invoke(toolCall.args);
+  const message    = new ToolMessage({
+    content:      typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult),
+    name:         toolCall.name,
+    tool_call_id: toolCall.id,
+  });
+  return { messages: [message] };
+}
+
+async function calculateNutritionNode(state) {
+  state.sendStatus?.("Checking nutrition…");
+  const toolCall   = state.toolCalls.shift();
+  const toolResult = await calculateNutritionTool.invoke(toolCall.args);
+  const message    = new ToolMessage({
+    content:      typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult),
+    name:         toolCall.name,
+    tool_call_id: toolCall.id,
+  });
+  return { messages: [message] };
+}
+
+async function savePlanNode(state) {
+  state.sendStatus?.("Finalizing your plan…");
+  const toolCall   = state.toolCalls.shift();
+  const toolResult = await saveMealPlanTool.invoke(toolCall.args);
+  const parsed     = typeof toolResult === "string" ? JSON.parse(toolResult) : toolResult;
+  return { result: parsed };
+}
+
+// ─── ROUTING FUNCTION ─────────────────────────────────────────────────────────
+// Dispatches to the right node based on the next pending tool call name.
+// Loops back to planMeals after each tool result until result is set (SaveMealPlan done).
+
+function routingFunction(state) {
+  if (state.result) return END;
+  const next = state.toolCalls[0];
+  if (!next)                              return "planMeals";        // LLM needs to decide
+  if (next.name === "SearchRecipes")      return "searchRecipes";
+  if (next.name === "GetRecipeDetails")   return "getRecipeDetails";
+  if (next.name === "CalculateNutrition") return "calculateNutrition";
+  if (next.name === "SaveMealPlan")       return "savePlan";
+  return "planMeals";
+}
+
+// ─── WIRE THE GRAPH ───────────────────────────────────────────────────────────
+
+const workflow = new StateGraph({ channels: graphStateData });
+
+workflow.addNode("planMeals",          planMealsNode);
+workflow.addNode("searchRecipes",      searchRecipesNode);
+workflow.addNode("getRecipeDetails",   getRecipeDetailsNode);
+workflow.addNode("calculateNutrition", calculateNutritionNode);
+workflow.addNode("savePlan",           savePlanNode);
+
+workflow.addEdge(START, "planMeals");
+
+// After planMeals, route based on which tool the LLM chose
+workflow.addConditionalEdges("planMeals", routingFunction,
+  ["planMeals", "searchRecipes", "getRecipeDetails", "calculateNutrition", "savePlan", END]);
+
+// After each tool node, route again (either back to planMeals or to another tool)
+workflow.addConditionalEdges("searchRecipes", routingFunction,
+  ["planMeals", "searchRecipes", "getRecipeDetails", "calculateNutrition", "savePlan"]);
+workflow.addConditionalEdges("getRecipeDetails", routingFunction,
+  ["planMeals", "searchRecipes", "getRecipeDetails", "calculateNutrition", "savePlan"]);
+workflow.addConditionalEdges("calculateNutrition", routingFunction,
+  ["planMeals", "searchRecipes", "getRecipeDetails", "calculateNutrition", "savePlan"]);
+
+workflow.addEdge("savePlan", END);
 
 const graph = workflow.compile();
 
-// ─── ROUTES: APPLICATIONS ─────────────────────────────────────────────────────
+// ─── ROUTES: USERS ────────────────────────────────────────────────────────────
 
-app.get("/applications", async (req, res) => {
+// POST /users — create a new user profile; calorieTarget is computed by pre-save hook
+app.post("/users", async (req, res) => {
   try {
-    const filter = req.query.status ? { status: req.query.status } : {};
-    res.json(await Application.find(filter).sort({ appliedDate: -1 }));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.post("/applications", async (req, res) => {
-  try {
-    const doc = await Application.create(req.body);
-    await ActivityLog.create({ applicationId: doc._id, event: "created", description: `Applied to ${doc.position} at ${doc.company}` });
-    if (doc.interviewDate) {
-      try {
-        const token = await GmailToken.findOne();
-        if (token) {
-          const auth = makeOAuthClient();
-          auth.setCredentials({ access_token: token.access_token, refresh_token: token.refresh_token, expiry_date: token.expiry_date });
-          await createCalendarEvent(auth, doc);
-        }
-      } catch (calErr) { console.error("Calendar event error:", calErr.message); }
-    }
-    res.status(201).json(doc);
-  } catch (err) { res.status(400).json({ error: err.message }); }
-});
-
-app.put("/applications/:id", async (req, res) => {
-  try {
-    const prev = await Application.findById(req.params.id);
-    if (!prev) return res.status(404).json({ error: "Not found" });
-    const doc = await Application.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
-    if (prev.status !== doc.status) {
-      await ActivityLog.create({ applicationId: doc._id, event: "status-change", description: `${doc.company}: ${prev.status} → ${doc.status}` });
-    }
-    if (req.body.interviewDate && String(prev.interviewDate) !== String(new Date(req.body.interviewDate))) {
-      try {
-        const token = await GmailToken.findOne();
-        if (token) {
-          const auth = makeOAuthClient();
-          auth.setCredentials({ access_token: token.access_token, refresh_token: token.refresh_token, expiry_date: token.expiry_date });
-          await createCalendarEvent(auth, doc);
-        }
-      } catch (calErr) { console.error("Calendar event error:", calErr.message); }
-    }
-    res.json(doc);
-  } catch (err) { res.status(400).json({ error: err.message }); }
-});
-
-app.delete("/applications/:id", async (req, res) => {
-  try {
-    const doc = await Application.findByIdAndDelete(req.params.id);
-    if (!doc) return res.status(404).json({ error: "Not found" });
-    await FollowUp.deleteMany({ applicationId: req.params.id });
-    await ActivityLog.deleteMany({ applicationId: req.params.id });
-    res.json({ message: "Deleted" });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get("/applications/:id/email-summary", async (req, res) => {
-  try {
-    const application = await Application.findById(req.params.id);
-    if (!application) return res.status(404).json({ error: "Not found" });
-
-    let gmail;
-    try { gmail = await getGmailClient(); }
-    catch { return res.json({ summary: application.emailSummary || "No emails found." }); }
-
-    const search = await gmail.users.threads
-      .list({ userId: "me", q: `"${application.company}" OR subject:"${application.position}"`, maxResults: 5 })
-      .catch(() => ({ data: {} }));
-
-    const threads = search.data.threads || [];
-    if (!threads.length) return res.json({ summary: "No emails found for this application." });
-
-    const contents = [];
-    for (const t of threads) {
-      const data = await gmail.users.threads.get({ userId: "me", id: t.id }).catch(() => null);
-      if (!data) continue;
-      const msgs = data.data.messages || [];
-      const latest = msgs[msgs.length - 1];
-      const subject = latest.payload.headers?.find(h => h.name === "Subject")?.value || "";
-      const from    = latest.payload.headers?.find(h => h.name === "From")?.value || "";
-      contents.push(`From: ${from} | Subject: ${subject} | ${latest.snippet}`);
-    }
-
-    const result = await ollama.chat({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: "system", content: "You are a job search assistant. Summarize the email activity for this job application in 2-3 sentences. Be concise and focus on what matters: interview requests, rejections, offers, or silence." },
-        { role: "user", content: `Company: ${application.company}\nPosition: ${application.position}\n\nEmails:\n${contents.join("\n\n")}` },
-      ],
-      stream: false,
-    }).catch(() => null);
-
-    const summary = result?.message?.content || application.emailSummary || "Could not generate summary.";
-    await Application.findByIdAndUpdate(application._id, { emailSummary: summary });
-    res.json({ summary });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ─── ROUTES: FOLLOW-UPS ───────────────────────────────────────────────────────
-
-app.get("/follow-ups", async (_req, res) => {
-  try {
-    res.json(await FollowUp.find().populate("applicationId", "company position").sort({ createdAt: -1 }));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.put("/follow-ups/:id", async (req, res) => {
-  try {
-    const doc = await FollowUp.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!doc) return res.status(404).json({ error: "Not found" });
-    if (req.body.sent) {
-      await ActivityLog.create({ applicationId: doc.applicationId, event: "follow-up-sent", description: `Follow-up sent: "${doc.subject}"` });
-    }
-    res.json(doc);
-  } catch (err) { res.status(400).json({ error: err.message }); }
-});
-
-app.delete("/follow-ups/:id", async (req, res) => {
-  try {
-    const doc = await FollowUp.findByIdAndDelete(req.params.id);
-    if (!doc) return res.status(404).json({ error: "Not found" });
-    res.json({ message: "Deleted" });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.post("/follow-ups/:id/send", async (req, res) => {
-  try {
-    const fu = await FollowUp.findById(req.params.id).populate("applicationId", "company position contactEmail");
-    if (!fu) return res.status(404).json({ error: "Not found" });
-
-    const gmail = await getGmailClient();
-    const to = fu.applicationId?.contactEmail || "";
-    if (!to) return res.status(400).json({ error: "No contact email on this application" });
-
-    const raw = Buffer.from(
-      `To: ${to}\r\nSubject: ${fu.subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${fu.body}`
-    ).toString("base64url");
-
-    await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
-
-    await FollowUp.findByIdAndUpdate(fu._id, { sent: true });
-    await ActivityLog.create({ applicationId: fu.applicationId._id, event: "follow-up-sent", description: `Follow-up sent to ${to}: "${fu.subject}"` });
-
-    res.json({ message: "Sent" });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /applications/:id/draft-followup — AI drafts a proactive follow-up, optionally scheduled
-app.post("/applications/:id/draft-followup", async (req, res) => {
-  try {
-    const app = await Application.findById(req.params.id);
-    if (!app) return res.status(404).json({ error: "Not found" });
-
-    const days = Math.floor((Date.now() - new Date(app.updatedAt)) / 86400000);
-    const result = await ollama.chat({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: "system", content: "Draft a professional follow-up email by calling draft_follow_up." },
-        { role: "user",   content: `Company: ${app.company}\nPosition: ${app.position}\nApplied ${days} days ago\nContact: ${app.contactName || "Hiring Manager"}` },
-      ],
-      tools: [draftTool],
-      stream: false,
-    }).catch(() => null);
-
-    const tc = result?.message.tool_calls?.[0];
-    if (!tc || tc.function.name !== "draft_follow_up") return res.status(500).json({ error: "AI failed to draft follow-up" });
-
-    const fu = await FollowUp.create({
-      applicationId: app._id,
-      subject: tc.function.arguments.subject,
-      body: tc.function.arguments.body,
-      draftedByAI: true,
-      scheduledDate: req.body.scheduledDate || null,
-    });
-    res.status(201).json(fu);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /applications/:id/draft-reply — finds latest Gmail thread and AI drafts a reply
-app.post("/applications/:id/draft-reply", async (req, res) => {
-  try {
-    const app = await Application.findById(req.params.id);
-    if (!app) return res.status(404).json({ error: "Not found" });
-
-    const gmail = await getGmailClient();
-    const search = await gmail.users.threads
-      .list({ userId: "me", q: `"${app.company}" OR subject:"${app.position}"`, maxResults: 1 })
-      .catch(() => ({ data: {} }));
-
-    const threads = search.data.threads || [];
-    if (!threads.length) return res.status(404).json({ error: `No emails found for ${app.company}` });
-
-    const thread = await gmail.users.threads.get({ userId: "me", id: threads[0].id });
-    const messages = thread.data.messages || [];
-    const latest = messages[messages.length - 1];
-    const subject = latest.payload.headers?.find((h) => h.name === "Subject")?.value || "";
-    const from    = latest.payload.headers?.find((h) => h.name === "From")?.value || "";
-    const content = `From: ${from}\nSubject: ${subject}\nMessage: ${latest.snippet}`;
-
-    const result = await ollama.chat({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: "system", content: "Draft a professional reply to this job application email by calling draft_follow_up." },
-        { role: "user",   content: `Company: ${app.company}\nPosition: ${app.position}\n\nEmail to reply to:\n${content}` },
-      ],
-      tools: [draftTool],
-      stream: false,
-    }).catch(() => null);
-
-    const tc = result?.message.tool_calls?.[0];
-    if (!tc || tc.function.name !== "draft_follow_up") return res.status(500).json({ error: "AI failed to draft reply" });
-
-    const fu = await FollowUp.create({
-      applicationId: app._id,
-      subject: tc.function.arguments.subject,
-      body: tc.function.arguments.body,
-      draftedByAI: true,
-      isReply: true,
-    });
-    res.status(201).json(fu);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ─── ROUTES: ACTIVITY LOG ─────────────────────────────────────────────────────
-
-app.get("/activity-logs", async (_req, res) => {
-  try {
-    res.json(await ActivityLog.find().sort({ timestamp: -1 }).limit(50));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ─── ROUTES: GMAIL AUTH ───────────────────────────────────────────────────────
-
-app.get("/auth/gmail", (_req, res) => {
-  if (!GOOGLE_CLIENT_ID) return res.status(500).json({ error: "Google credentials not set in .env" });
-  const url = makeOAuthClient().generateAuthUrl({
-    access_type: "offline",
-    prompt: "consent",
-    scope: [
-      "https://www.googleapis.com/auth/gmail.readonly",
-      "https://www.googleapis.com/auth/gmail.send",
-      "https://www.googleapis.com/auth/calendar.events",
-    ],
-  });
-  res.redirect(url);
-});
-
-app.get("/auth/gmail/callback", async (req, res) => {
-  try {
-    const { tokens } = await makeOAuthClient().getToken(req.query.code);
-    await GmailToken.deleteMany({});
-    await GmailToken.create({ access_token: tokens.access_token, refresh_token: tokens.refresh_token, expiry_date: tokens.expiry_date });
-    res.send("<p>Gmail connected! You can close this tab.</p>");
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get("/auth/gmail/status", async (_req, res) => {
-  const token = await GmailToken.findOne();
-  res.json({ connected: !!token });
-});
-
-// ─── ROUTE: SCAN INBOX (runs the AI agent) ────────────────────────────────────
-
-app.post("/scan-inbox", async (_req, res) => {
-  try {
-    const applications = await Application.find({ status: { $in: ["applied", "interviewing"] } });
-    if (!applications.length) return res.json({ message: "No active applications to scan" });
-
-    const state = await graph.invoke({ applications });
-    res.json({
-      message: "Scan complete",
-      threadsFound:     state.emailThreads.length,
-      classified:       state.classifications.length,
-      followUpsDrafted: state.followUpDrafts.length,
-    });
+    const user = new User(req.body);
+    await user.save();
+    res.status(201).json(user);
   } catch (err) {
-    console.error("scan-inbox error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(400).json({ error: err.message });
   }
 });
 
-// ─── SCHEDULED SEND JOB ──────────────────────────────────────────────────────
-
-setInterval(async () => {
-  const due = await FollowUp.find({ sent: false, scheduledDate: { $lte: new Date() } }).populate("applicationId", "company position contactEmail");
-  for (const fu of due) {
-    try {
-      const app = fu.applicationId;
-      const to = app?.contactEmail || "";
-      if (!to) continue;
-
-      // Check for recent Gmail activity — skip send if email received in last 7 days
-      let hasRecentActivity = false;
-      try {
-        const gmail = await getGmailClient();
-        const check = await gmail.users.threads.list({
-          userId: "me",
-          q: `"${app.company}" newer_than:7d`,
-          maxResults: 1,
-        });
-        hasRecentActivity = (check.data.threads || []).length > 0;
-      } catch { /* gmail unavailable, proceed with send */ }
-
-      if (hasRecentActivity) {
-        await FollowUp.findByIdAndUpdate(fu._id, { scheduledDate: null });
-        await ActivityLog.create({ applicationId: app._id, event: "follow-up-sent", description: `Skipped scheduled follow-up for ${app.company} — recent email activity detected` });
-        console.log(`Skipped scheduled follow-up for ${app.company}: recent activity`);
-        continue;
-      }
-
-      const gmail = await getGmailClient();
-      const raw = Buffer.from(
-        `To: ${to}\r\nSubject: ${fu.subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${fu.body}`
-      ).toString("base64url");
-      await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
-      await FollowUp.findByIdAndUpdate(fu._id, { sent: true, scheduledDate: null });
-      await ActivityLog.create({ applicationId: app._id, event: "follow-up-sent", description: `Scheduled follow-up sent to ${to}: "${fu.subject}"` });
-      console.log(`Scheduled follow-up sent: ${fu.subject}`);
-    } catch (err) {
-      console.error(`Failed to send scheduled follow-up ${fu._id}:`, err.message);
-    }
+// GET /users/:id — retrieve a user by ID
+app.get("/users/:id", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json(user);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
-}, 60 * 1000); // check every minute
+});
+
+// ─── ROUTES: MEAL PLANS ───────────────────────────────────────────────────────
+
+// POST /meal-plans — SSE streaming: runs the LangGraph agent and streams progress
+app.post("/meal-plans", async (req, res) => {
+  res.setHeader("Content-Type",  "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection",    "keep-alive");
+  res.flushHeaders();
+
+  function sendStatus(msg) { res.write(`data: ${JSON.stringify({ status: msg })}\n\n`); }
+  function sendDone(planId) { res.write(`data: ${JSON.stringify({ done: true, planId })}\n\n`); res.end(); }
+  function sendError(msg)   { res.write(`data: ${JSON.stringify({ error: msg })}\n\n`); res.end(); }
+
+  const { userId, workouts = {}, foodPreference = "" } = req.body;
+  const user = await User.findById(userId).catch(() => null);
+  if (!user) { sendError("User not found"); return; }
+
+  // Pre-compute workout tags and calorie targets (deterministic math, no LLM needed)
+  const HIGH_LOAD      = /leg|squat|run|long|heavy|cardio|bike|swim/i;
+  const workoutTags    = {};
+  const calorieTargets = {};
+  for (const day of DAYS) {
+    const w             = workouts[day] || "";
+    workoutTags[day]    = HIGH_LOAD.test(w) ? "+carbs" : "";
+    calorieTargets[day] = Math.round(workoutTags[day] === "+carbs" ? user.calorieTarget + 200 : user.calorieTarget);
+  }
+
+  // Build context string for the LLM prompt
+  const dayContext = DAYS.map((d) =>
+    `  ${d}: workout="${workouts[d] || "Rest"}", calorie_target=${calorieTargets[d]}, tag="${workoutTags[d] || "none"}"`
+  ).join("\n");
+
+  const systemMsg = new SystemMessage(
+    `You are a meal planner assistant. You create 7-day meal plans by calling tools one at a time.\n` +
+    `Each time you are called, look at the tool results already in this conversation to understand your progress, then call EXACTLY ONE tool to take the next step.\n\n` +
+    `The required sequence is:\n` +
+    `PHASE 1 — For each day Mon,Tue,Wed,Thu,Fri,Sat,Sun (in order): call SearchRecipes to find a recipe.\n` +
+    `PHASE 2 — For each day Mon,Tue,Wed,Thu,Fri,Sat,Sun (in order): call GetRecipeDetails using the recipeId from the SearchRecipes result for that day.\n` +
+    `PHASE 3 — Call CalculateNutrition once with all 7 meals.\n` +
+    `PHASE 4 — Call SaveMealPlan once with all 7 days to finish.\n\n` +
+    `Rules:\n` +
+    `- Call only ONE tool per response.\n` +
+    `- Read previous tool results carefully to know which day you are on and which phase you are in.\n` +
+    `- Never repeat a tool call for a day you already have a result for.\n` +
+    `- Do not stop until SaveMealPlan has been called.`
+  );
+
+  const humanMsg = new HumanMessage(
+    `Create a 7-day meal plan.\n` +
+    `Food preferences: ${foodPreference || "balanced, healthy meals"}\n\n` +
+    `Per-day calorie targets and workout tags:\n${dayContext}\n\n` +
+    `Begin now: call SearchRecipes for Mon.`
+  );
+
+  // Populate module-level context so tools can access per-request data
+  _ctx.calorieTargets = calorieTargets;
+  _ctx.workoutTags    = workoutTags;
+  _ctx.workouts       = workouts;
+  _ctx.userId         = userId;
+  _ctx.recipeDetails  = {};
+
+  try {
+    sendStatus("Starting meal planning…");
+    const finalState = await graph.invoke(
+      { messages: [systemMsg, humanMsg], sendStatus },
+      { recursionLimit: 60 },
+    );
+    console.log("FINAL STATE result:", finalState.result);
+    if (finalState.result?.savedPlanId) {
+      sendDone(finalState.result.savedPlanId);
+    } else {
+      sendError("Agent did not save a plan");
+    }
+  } catch (err) {
+    console.error("Agent error:", err);
+    sendError(err.message);
+  }
+});
+
+// GET /meal-plans/:id — retrieve a saved meal plan by ID
+app.get("/meal-plans/:id", async (req, res) => {
+  try {
+    const plan = await MealPlan.findById(req.params.id);
+    if (!plan) return res.status(404).json({ error: "Meal plan not found" });
+    res.json(plan);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// PUT /meal-plans/:id/meals/:day — swap a single day's meal
+app.put("/meal-plans/:id/meals/:day", async (req, res) => {
+  try {
+    const plan = await MealPlan.findById(req.params.id);
+    if (!plan) return res.status(404).json({ error: "Meal plan not found" });
+
+    const dayEntry = plan.days.find((d) => d.day === req.params.day);
+    if (!dayEntry)
+      return res
+        .status(404)
+        .json({ error: `Day "${req.params.day}" not found in plan` });
+
+    // Apply all provided fields to the matching day sub-document
+    const {
+      recipeId,
+      name,
+      imageUrl,
+      calories,
+      macros,
+      workoutTag,
+      instructions,
+      ingredients,
+    } = req.body;
+    if (recipeId      !== undefined) dayEntry.recipeId      = recipeId;
+    if (name          !== undefined) dayEntry.name          = name;
+    if (imageUrl      !== undefined) dayEntry.imageUrl      = imageUrl;
+    if (calories      !== undefined) dayEntry.calories      = calories;
+    if (macros        !== undefined) dayEntry.macros        = macros;
+    if (workoutTag    !== undefined) dayEntry.workoutTag    = workoutTag;
+    if (instructions  !== undefined) dayEntry.instructions  = instructions;
+    if (ingredients   !== undefined) dayEntry.ingredients   = ingredients;
+
+    await plan.save();
+    res.json(plan);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// DELETE /meal-plans/:id — remove a meal plan
+app.delete("/meal-plans/:id", async (req, res) => {
+  try {
+    const plan = await MealPlan.findByIdAndDelete(req.params.id);
+    if (!plan) return res.status(404).json({ error: "Meal plan not found" });
+    res.json({ message: "Deleted" });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 
 // ─── START ────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => console.log(`Pipeline running on http://localhost:${PORT}`));
+app.listen(PORT, () =>
+  console.log(`NourishWeek running on http://localhost:${PORT}`),
+);

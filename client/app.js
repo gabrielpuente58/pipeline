@@ -3,202 +3,171 @@ const { createApp } = Vue;
 createApp({
   data() {
     return {
-      apiUrl: "http://localhost:8080",
-      activeTab: "applications",
-      appView: "dashboard",
+      apiUrl: 'http://localhost:8080',
+      screen: 'profile', // 'profile' | 'chat' | 'loading' | 'board'
 
-      statusList: [
-        { value: "saved",        label: "Saved" },
-        { value: "applied",      label: "Applied" },
-        { value: "interviewing", label: "Interviewing" },
-        { value: "offer",        label: "Offer" },
-        { value: "rejected",     label: "Rejected" },
-        { value: "ghosted",      label: "Ghosted" },
+      days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+
+      profile: { height: '', weight: '', age: '', sex: '' },
+      workouts: { Mon: '', Tue: '', Wed: '', Thu: '', Fri: '', Sat: '', Sun: '' },
+      foodPreference: '',
+
+      suggestions: [
+        'High Protein', 'Low Carb', 'Mediterranean', 'Vegetarian',
+        'Quick Meals', 'Comfort Food', 'Asian', 'Budget Friendly',
+        'No Dairy', 'No Gluten', 'Spicy', 'Meal Prep Friendly',
       ],
 
-      applications: [],
-      gmailConnected: false,
-      loading:  false,
-      scanning: false,
-      saving:   false,
-
-      showModal: false,
-      editing: null,
-      form: { company: "", position: "", status: "applied", appliedDate: "", interviewDate: "", location: "", salary: "", jobUrl: "", notes: "", contactName: "", contactEmail: "" },
       errors: {},
+      globalError: '',
+      generating: false,
 
-      message: "",
-      messageType: "success",
-
-      draggingApp: null,
-      dragOverCol: null,
+      statusMessage: 'Initializing…',
+      plan: null,
+      userId: null,
+      detailDay: null,
     };
   },
 
   computed: {
-    upcomingInterviews() {
-      const now = Date.now();
-      return this.applications.filter((a) => {
-        if (!a.interviewDate) return false;
-        const diff = new Date(a.interviewDate) - now;
-        return diff > 0 && diff < 7 * 86400000;
-      });
+    avgCalories() {
+      if (!this.plan || !this.plan.days.length) return 0;
+      const total = this.plan.days.reduce((s, d) => s + (d.calories || 0), 0);
+      return Math.round(total / this.plan.days.length);
     },
-  },
-
-  mounted() {
-    this.load();
   },
 
   methods: {
-    async load() {
-      this.loading = true;
-      await Promise.all([this.fetchApplications(), this.fetchGmailStatus()]);
-      this.loading = false;
-    },
+    // ── Navigation ────────────────────────────────────────────────────────────
 
-    async fetchApplications() {
-      const res = await fetch(`${this.apiUrl}/applications`);
-      this.applications = res.ok ? await res.json() : [];
-    },
-
-    async fetchGmailStatus() {
-      const res = await fetch(`${this.apiUrl}/auth/gmail/status`).catch(() => null);
-      this.gmailConnected = res?.ok ? (await res.json()).connected : false;
-    },
-
-    countByStatus(status) {
-      return this.applications.filter((a) => a.status === status).length;
-    },
-
-    byStatus(status) {
-      return this.applications.filter((a) => a.status === status);
-    },
-
-    isUpcoming(date) {
-      const diff = new Date(date) - Date.now();
-      return diff > 0 && diff < 7 * 86400000;
-    },
-
-    openModal(app) {
-      this.editing = app;
-      this.errors = {};
-      this.form = app
-        ? {
-            ...app,
-            appliedDate:   app.appliedDate   ? new Date(app.appliedDate).toISOString().split("T")[0]   : "",
-            interviewDate: app.interviewDate ? new Date(app.interviewDate).toISOString().split("T")[0] : "",
-          }
-        : { company: "", position: "", status: "applied", appliedDate: "", interviewDate: "", location: "", salary: "", jobUrl: "", notes: "", contactName: "", contactEmail: "" };
-      this.showModal = true;
-    },
-
-    openModalWithStatus(status) {
-      this.editing = null;
-      this.errors = {};
-      this.form = { company: "", position: "", status, appliedDate: "", interviewDate: "", location: "", salary: "", jobUrl: "", notes: "", contactName: "", contactEmail: "" };
-      this.showModal = true;
-    },
-
-    closeModal() {
-      this.showModal = false;
-      this.editing = null;
-      this.errors = {};
-    },
-
-    validate() {
+    goToChat() {
       const e = {};
-      if (!this.form.company.trim())  e.company     = "Required";
-      if (!this.form.position.trim()) e.position    = "Required";
-      if (!this.form.appliedDate)     e.appliedDate = "Required";
+      if (!this.profile.height || this.profile.height <= 0) e.height = 'Required, must be > 0';
+      if (!this.profile.weight || this.profile.weight <= 0) e.weight = 'Required, must be > 0';
+      if (!this.profile.age    || this.profile.age    <= 0) e.age    = 'Required, must be > 0';
+      if (!this.profile.sex) e.sex = 'Please select';
       this.errors = e;
-      return !Object.keys(e).length;
+      if (Object.keys(e).length) return;
+      this.screen = 'chat';
     },
 
-    async saveApp() {
-      if (!this.validate()) return;
-      this.saving = true;
-      try {
-        const url    = this.editing ? `${this.apiUrl}/applications/${this.editing._id}` : `${this.apiUrl}/applications`;
-        const method = this.editing ? "PUT" : "POST";
-        const res    = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(this.form) });
-        const data   = await res.json();
-        if (!res.ok) throw new Error(data.error);
-        this.closeModal();
-        await this.fetchApplications();
-        this.notify(this.editing ? "Application updated" : "Application added");
-      } catch (err) {
-        this.notify(err.message, "error");
-      } finally {
-        this.saving = false;
-      }
+    goToProfile() {
+      this.screen = 'profile';
+      this.errors = {};
     },
 
-    async deleteApp(id) {
-      if (!confirm("Delete this application?")) return;
-      const res = await fetch(`${this.apiUrl}/applications/${id}`, { method: "DELETE" });
-      if (res.ok) {
-        await this.fetchApplications();
-        this.notify("Deleted");
-      }
-    },
-
-    async scanInbox() {
-      this.scanning = true;
-      try {
-        const res  = await fetch(`${this.apiUrl}/scan-inbox`, { method: "POST" });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
-        await this.fetchApplications();
-        this.notify(`Scan complete — ${data.threadsFound} threads found, ${data.classified} classified`);
-      } catch (err) {
-        this.notify(err.message, "error");
-      } finally {
-        this.scanning = false;
-      }
-    },
-
-    async fetchEmailSummary(app) {
-      const res  = await fetch(`${this.apiUrl}/applications/${app._id}/email-summary`);
-      const data = await res.json();
-      if (res.ok) {
-        const idx = this.applications.findIndex((a) => a._id === app._id);
-        if (idx !== -1) this.applications[idx] = { ...this.applications[idx], emailSummary: data.summary };
-        this.notify("Summary updated");
+    addSuggestion(chip) {
+      const current = this.foodPreference.trim();
+      if (current && !current.endsWith(',')) {
+        this.foodPreference = current + ', ' + chip;
       } else {
-        this.notify(data.error || "Failed to fetch summary", "error");
+        this.foodPreference = (current ? current + ' ' : '') + chip;
       }
     },
 
-    dragStart(app)  { this.draggingApp = app; },
-    dragEnd()       { this.draggingApp = null; this.dragOverCol = null; },
-    dragOver(e)     { this.dragOverCol = e.currentTarget.dataset.col; },
-    dragLeave(e)    { if (!e.currentTarget.contains(e.relatedTarget)) this.dragOverCol = null; },
+    // ── Generation ────────────────────────────────────────────────────────────
 
-    async drop(status) {
-      if (!this.draggingApp || this.draggingApp.status === status) {
-        this.draggingApp = null; this.dragOverCol = null; return;
+    async generate() {
+      const e = {};
+      const hasWorkout = this.days.some(d => this.workouts[d].trim());
+      if (!hasWorkout) e.workouts = 'Enter at least one workout';
+      if (!this.foodPreference.trim()) e.foodPreference = 'Tell us what you want to eat';
+      this.errors = e;
+      if (Object.keys(e).length) return;
+
+      this.generating = true;
+      this.globalError = '';
+      this.screen = 'loading';
+      this.statusMessage = 'Initializing…';
+
+      try {
+        const userRes = await fetch(`${this.apiUrl}/users`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.profile),
+        });
+        const userData = await userRes.json();
+        if (!userRes.ok) throw new Error(userData.error);
+        this.userId = userData._id;
+
+        await this.streamMealPlan();
+      } catch (err) {
+        this.globalError = err.message;
+        this.screen = 'chat';
+        this.generating = false;
       }
-      const res = await fetch(`${this.apiUrl}/applications/${this.draggingApp._id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
+    },
+
+    streamMealPlan() {
+      return new Promise((resolve, reject) => {
+        fetch(`${this.apiUrl}/meal-plans`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: this.userId,
+            workouts: this.workouts,
+            foodPreference: this.foodPreference,
+          }),
+        }).then(response => {
+          if (!response.ok) {
+            return response.json().then(d => reject(new Error(d.error || 'Server error')));
+          }
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          const read = () => {
+            reader.read().then(({ done, value }) => {
+              if (done) { resolve(); return; }
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop();
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  try {
+                    const parsed = JSON.parse(line.slice(6));
+                    if (parsed.status) this.statusMessage = parsed.status;
+                    if (parsed.error) { reject(new Error(parsed.error)); return; }
+                    if (parsed.done && parsed.planId) {
+                      this.loadPlan(parsed.planId).then(resolve).catch(reject);
+                      return;
+                    }
+                  } catch {}
+                }
+              }
+              read();
+            }).catch(reject);
+          };
+          read();
+        }).catch(reject);
       });
-      if (res.ok) {
-        await this.fetchApplications();
-        this.notify(`Moved to ${status}`);
-      }
-      this.draggingApp = null; this.dragOverCol = null;
     },
 
-    fmtDate(d) {
-      return d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
+    async loadPlan(planId) {
+      const res = await fetch(`${this.apiUrl}/meal-plans/${planId}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      this.plan = data;
+      this.generating = false;
+      this.screen = 'board';
     },
-    notify(msg, type = "success") {
-      this.message = msg;
-      this.messageType = type;
-      clearTimeout(this._msgTimer);
-      this._msgTimer = setTimeout(() => { this.message = ""; }, 4000);
+
+    regenerate() {
+      this.screen = 'chat';
+      this.plan = null;
+      this.userId = null;
+      this.errors = {};
+      this.globalError = '';
+      this.generating = false;
+    },
+
+    // ── Board ─────────────────────────────────────────────────────────────────
+
+    openDetail(day) { this.detailDay = day; },
+    closeDetail()   { this.detailDay = null; },
+
+    maxMacro(day) {
+      return Math.max(day.macros?.protein || 0, day.macros?.carbs || 0, day.macros?.fat || 0, 1);
     },
   },
-}).mount("#app");
+}).mount('#app');
