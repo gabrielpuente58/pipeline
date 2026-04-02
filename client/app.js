@@ -29,6 +29,17 @@ createApp({
     };
   },
 
+  mounted() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('nourishweek_profile') || 'null');
+      if (saved) {
+        this.profile = { height: saved.height, weight: saved.weight, age: saved.age, sex: saved.sex };
+        this.userId  = saved.userId || null;
+        this.screen  = 'chat'; // skip profile screen
+      }
+    } catch {}
+  },
+
   computed: {
     avgCalories() {
       if (!this.plan || !this.plan.days.length) return 0;
@@ -56,6 +67,16 @@ createApp({
       this.errors = {};
     },
 
+    clearProfile() {
+      localStorage.removeItem('nourishweek_profile');
+      this.profile = { height: '', weight: '', age: '', sex: '' };
+      this.userId  = null;
+      this.plan    = null;
+      this.errors  = {};
+      this.globalError = '';
+      this.screen  = 'profile';
+    },
+
     addSuggestion(chip) {
       const current = this.foodPreference.trim();
       if (current && !current.endsWith(',')) {
@@ -81,14 +102,18 @@ createApp({
       this.statusMessage = 'Initializing…';
 
       try {
-        const userRes = await fetch(`${this.apiUrl}/users`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(this.profile),
-        });
-        const userData = await userRes.json();
-        if (!userRes.ok) throw new Error(userData.error);
-        this.userId = userData._id;
+        // Reuse saved userId if we already have one, otherwise create a new user
+        if (!this.userId) {
+          const userRes = await fetch(`${this.apiUrl}/users`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.profile),
+          });
+          const userData = await userRes.json();
+          if (!userRes.ok) throw new Error(userData.error);
+          this.userId = userData._id;
+          localStorage.setItem('nourishweek_profile', JSON.stringify({ ...this.profile, userId: this.userId }));
+        }
 
         await this.streamMealPlan();
       } catch (err) {
