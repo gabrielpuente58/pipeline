@@ -148,11 +148,14 @@ class SearchRecipesTool extends StructuredTool {
       const url =
         `https://api.spoonacular.com/recipes/complexSearch` +
         `?apiKey=${SPOONACULAR_KEY}` +
-        `&number=5&addRecipeNutrition=true` +
+        `&number=3` +
         `&minCalories=${minCal}&maxCalories=${maxCal}` +
         `&query=${encodeURIComponent(query)}`;
       const res  = await fetch(url);
       const data = await res.json();
+      if (data.status === 'failure' || data.code === 402) {
+        console.error("Spoonacular error:", data.message || data);
+      }
       console.log(`SearchRecipes [${day}] query="${query}" cal=${minCal}-${maxCal} hits=${data.results?.length ?? 0}`);
       // Pick first result not already used this week
       const hit = (data.results || []).find((r) => !_ctx.usedRecipeIds.has(r.id)) || data.results?.[0];
