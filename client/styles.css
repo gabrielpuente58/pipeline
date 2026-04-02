@@ -1,5 +1,5 @@
 /* =====================================================================
-   NourishWeek — Weekly Meal Planner
+   NourishWeek — Triathlete Daily Meal Planner
    Dark theme stylesheet
    ===================================================================== */
 
@@ -25,6 +25,17 @@
   --carbs-clr:   #d29922;
   --fat-clr:     #3fb950;
   --cal-clr:     #a371f7;
+
+  /* Sport accent colors */
+  --swim-clr: #38bdf8;
+  --bike-clr: #fb923c;
+  --run-clr:  #4ade80;
+  --lift-clr: #c084fc;
+
+  /* Meal type colors */
+  --breakfast-clr: #f59e0b;
+  --lunch-clr:     #22c55e;
+  --dinner-clr:    #8b5cf6;
 }
 
 /* --------------------------------------------------------------------
@@ -53,13 +64,13 @@ body {
   flex-shrink: 0;
 }
 
-@keyframes spin    { to { transform: rotate(360deg); } }
-@keyframes pulse   { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.6; transform:scale(.92); } }
+@keyframes spin  { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.6; transform:scale(.92); } }
 
 .spin { animation: spin 0.8s linear infinite; }
 
 /* =====================================================================
-   SHARED — Onboarding logo, step indicator, errors, fields
+   SHARED — Logo, errors, field primitives, chips, navigation buttons
    ===================================================================== */
 
 .onboard-logo {
@@ -94,65 +105,6 @@ body {
   margin-bottom: 32px;
 }
 
-/* Step indicator */
-.step-indicator {
-  display: flex;
-  align-items: center;
-  margin-bottom: 28px;
-}
-
-.step {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-}
-
-.step-num {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--surface2);
-  border: 1.5px solid var(--border);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
-}
-
-.step-num .material-symbols-outlined { font-size: 13px; }
-.step.active .step-num  { background: var(--accent); border-color: var(--accent); color: #fff; }
-.step-num.done          { background: var(--green);  border-color: var(--green);  color: #fff; }
-
-.step-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--subtle);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  white-space: nowrap;
-}
-
-.step.active .step-label { color: var(--accent); }
-
-.step-line {
-  width: 60px;
-  height: 1.5px;
-  background: var(--border);
-  margin: 0 8px 16px;
-  flex-shrink: 0;
-}
-
-.step-line.filled { background: var(--green); }
-
-.step-indicator.compact { margin-bottom: 0; }
-.step-indicator.compact .step-label { display: none; }
-.step-indicator.compact .step-num   { width: 22px; height: 22px; font-size: 11px; }
-.step-indicator.compact .step-line  { width: 28px; margin-bottom: 0; }
-
 /* Global error banner */
 .global-error {
   display: flex;
@@ -169,8 +121,6 @@ body {
   width: 100%;
 }
 
-.chat-error { max-width: 680px; margin: 0 auto 16px; }
-
 /* Inline field errors */
 .err {
   font-size: 11.5px;
@@ -178,10 +128,10 @@ body {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-top: 2px;
+  margin-top: 4px;
 }
 
-/* Field primitives (shared across profile + chat screens) */
+/* Field primitives */
 .field {
   display: flex;
   flex-direction: column;
@@ -208,9 +158,9 @@ body {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.field-input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-bg); }
+.field-input:focus        { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-bg); }
 .field-input::placeholder { color: var(--subtle); }
-.field-input.invalid       { border-color: var(--red); }
+.field-input.invalid      { border-color: var(--red); }
 
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
@@ -240,6 +190,111 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
 
 .radio-label input[type="radio"] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
 .radio-text { font-size: 13.5px; }
+
+/* Textarea / food preference input */
+.chat-input-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.chat-input-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.chat-input-wrap.invalid      { border-color: var(--red); }
+
+.chat-input-icon {
+  font-size: 18px !important;
+  color: var(--accent);
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.chat-textarea {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  line-height: 1.6;
+  resize: none;
+  outline: none;
+  min-height: 72px;
+}
+
+.chat-textarea::placeholder { color: var(--subtle); }
+
+/* Suggestion chips */
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  user-select: none;
+}
+
+.chip:hover { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
+.chip .material-symbols-outlined { font-size: 13px; }
+
+/* Back / clear-profile navigation buttons */
+.btn-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  user-select: none;
+}
+
+.btn-back:hover { color: var(--text); border-color: var(--subtle); }
+.btn-back .material-symbols-outlined { font-size: 15px; }
+
+.btn-clear-profile {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  user-select: none;
+}
+
+.btn-clear-profile:hover { color: var(--text); border-color: var(--subtle); }
+.btn-clear-profile .material-symbols-outlined { font-size: 15px; }
 
 /* =====================================================================
    SCREEN 1 — PROFILE
@@ -319,20 +374,20 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
 .btn-continue .material-symbols-outlined { font-size: 18px; }
 
 /* =====================================================================
-   SCREEN 2 — CHAT / PREFERENCES
+   SCREEN 2 — WORKOUT INPUT
    ===================================================================== */
 
-.chat-screen {
+.workout-screen {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  max-width: 680px;
+  max-width: 560px;
   margin: 0 auto;
-  padding: 0 20px;
+  padding: 0 24px 40px;
 }
 
-/* Chat header bar */
-.chat-header {
+/* Header row */
+.workout-header {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -341,191 +396,145 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
   margin-bottom: 32px;
 }
 
-.chat-header .step-indicator.compact { margin-left: auto; }
+.workout-header .onboard-logo { margin-bottom: 0; flex: 1; }
 
-.btn-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 12px;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 600;
-  font-family: inherit;
-  cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
-  user-select: none;
+.workout-global-error {
+  max-width: 560px;
+  margin-bottom: 20px;
 }
 
-.btn-back:hover { color: var(--text); border-color: var(--subtle); }
-.btn-back .material-symbols-outlined { font-size: 15px; }
-
-.btn-clear-profile {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  background: none;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 12px;
-  cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
-  margin-left: auto;
-}
-.btn-clear-profile:hover { color: var(--text); border-color: var(--subtle); }
-.btn-clear-profile .material-symbols-outlined { font-size: 15px; }
-
-/* Chat body */
-.chat-body {
-  flex: 1;
+/* Section blocks */
+.workout-section {
   display: flex;
   flex-direction: column;
-  gap: 36px;
-  padding-bottom: 16px;
+  gap: 14px;
+  margin-bottom: 32px;
 }
 
-.chat-section { display: flex; flex-direction: column; gap: 12px; }
-
-.chat-heading {
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: -0.4px;
-  line-height: 1.3;
-}
-
-.chat-sub {
-  font-size: 13.5px;
-  color: var(--muted);
-  line-height: 1.6;
-  margin-top: -4px;
-}
-
-/* Textarea / chat input */
-.chat-input-wrap {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  background: var(--surface);
-  border: 1.5px solid var(--border);
-  border-radius: 12px;
-  padding: 12px 14px;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-
-.chat-input-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
-.chat-input-wrap.invalid       { border-color: var(--red); }
-
-.chat-input-icon {
-  font-size: 18px !important;
-  color: var(--accent);
-  margin-top: 2px;
-  flex-shrink: 0;
-}
-
-.chat-textarea {
-  flex: 1;
-  background: none;
-  border: none;
-  color: var(--text);
-  font-size: 14px;
-  font-family: inherit;
-  line-height: 1.6;
-  resize: none;
-  outline: none;
-  min-height: 72px;
-}
-
-.chat-textarea::placeholder { color: var(--subtle); }
-
-/* Suggestion chips */
-.chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 12px;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  color: var(--muted);
-  font-size: 12.5px;
-  font-weight: 600;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-  user-select: none;
-}
-
-.chip:hover { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
-.chip .material-symbols-outlined { font-size: 13px; }
-
-/* Workout section heading */
 .section-heading {
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-size: 15px;
+  gap: 8px;
+  font-size: 16px;
   font-weight: 700;
   letter-spacing: -0.2px;
 }
 
-.section-heading .material-symbols-outlined { font-size: 17px; color: var(--accent); }
+.section-heading .material-symbols-outlined { font-size: 18px; color: var(--accent); }
 
-/* Workout fields */
-.workout-fields {
+.section-sub {
+  font-size: 13.5px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin-top: -6px;
+}
+
+/* Sport sliders */
+.sport-sliders {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 16px;
 }
 
-.workout-field {
+.sport-slider {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
-.workout-label {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--muted);
-  width: 34px;
+/* Sport icon circles */
+.sport-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
 }
 
-.workout-input {
-  flex: 1;
-  padding: 8px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
+.sport-icon .material-symbols-outlined { font-size: 18px !important; }
+
+.sport-icon-swim { background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3); }
+.sport-icon-swim .material-symbols-outlined { color: var(--swim-clr); }
+
+.sport-icon-bike { background: rgba(251, 146, 60, 0.15); border: 1px solid rgba(251, 146, 60, 0.3); }
+.sport-icon-bike .material-symbols-outlined { color: var(--bike-clr); }
+
+.sport-icon-run  { background: rgba(74, 222, 128, 0.15); border: 1px solid rgba(74, 222, 128, 0.3); }
+.sport-icon-run  .material-symbols-outlined { color: var(--run-clr); }
+
+.sport-icon-lift { background: rgba(192, 132, 252, 0.15); border: 1px solid rgba(192, 132, 252, 0.3); }
+.sport-icon-lift .material-symbols-outlined { color: var(--lift-clr); }
+
+.sport-label {
+  flex: 0 0 36px;
   font-size: 13px;
-  font-family: inherit;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  font-weight: 600;
+  color: var(--text);
 }
 
-.workout-input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-bg); }
-.workout-input::placeholder { color: var(--subtle); }
-.workout-input.invalid       { border-color: var(--red); }
-.workout-err { margin-top: 2px; }
+/* Slider track wrapper */
+.slider-track {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+/* Range input — fully custom */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  border: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--border);
+  cursor: pointer;
+  transition: transform 0.12s;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--border);
+  cursor: pointer;
+}
+
+input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:focus::-webkit-slider-thumb { transform: scale(1.2); }
+
+.sport-duration {
+  width: 80px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+  letter-spacing: -0.2px;
+}
 
 /* Generate button — sticky footer */
-.chat-footer {
+.workout-footer {
+  margin-top: auto;
+  padding-top: 16px;
+  padding-bottom: 8px;
   position: sticky;
   bottom: 0;
-  padding: 16px 0 28px;
   background: linear-gradient(to bottom, transparent, var(--bg) 35%);
 }
 
@@ -636,7 +645,7 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
 .app-logo .material-symbols-outlined { font-size: 20px; color: var(--accent); }
 
 /* =====================================================================
-   SCREEN 4 — WEEK BOARD
+   SCREEN 4 — BOARD
    ===================================================================== */
 
 .board-screen {
@@ -648,7 +657,7 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
 .summary-bar {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 10px;
   flex: 1;
   flex-wrap: wrap;
 }
@@ -660,9 +669,26 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
   font-size: 13.5px;
   font-weight: 600;
   color: var(--muted);
+  margin-right: 4px;
 }
 
 .summary-stat .material-symbols-outlined { font-size: 16px; color: var(--accent); }
+
+/* Active workout pills in header */
+.workout-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--muted);
+}
+
+.workout-pill .material-symbols-outlined { font-size: 13px; color: var(--accent); }
 
 .btn-regenerate {
   margin-left: auto;
@@ -685,18 +711,20 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
 .btn-regenerate:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 .btn-regenerate .material-symbols-outlined { font-size: 16px; }
 
-/* Week grid */
-.week-grid {
+/* Meals row — 3-column grid */
+.meals-row {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 14px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  max-width: 1000px;
+  margin: 0 auto;
 }
 
-@media (max-width: 1200px) { .week-grid { grid-template-columns: repeat(4, 1fr); } }
-@media (max-width: 700px)  { .week-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 900px) and (min-width: 601px) { .meals-row { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 600px) { .meals-row { grid-template-columns: 1fr; } }
 
-/* Day card */
-.day-card {
+/* Meal card */
+.meal-card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -708,16 +736,16 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
   flex-direction: column;
 }
 
-.day-card:hover {
+.meal-card:hover {
   transform: translateY(-4px);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   border-color: var(--accent);
 }
 
-.day-card-image {
+.meal-card-image {
   position: relative;
   width: 100%;
-  height: 140px;
+  height: 200px;
   flex-shrink: 0;
 }
 
@@ -737,35 +765,38 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
   justify-content: center;
 }
 
-.meal-img-placeholder .material-symbols-outlined { font-size: 34px; color: var(--subtle); }
+.meal-img-placeholder .material-symbols-outlined { font-size: 42px; color: var(--subtle); }
 
-/* Day badge overlaid on image */
-.day-label-badge {
+/* Meal type badge overlaid on image */
+.meal-type-badge {
   position: absolute;
-  top: 8px;
-  left: 10px;
+  top: 10px;
+  left: 12px;
   font-size: 10px;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.6px;
   color: #fff;
-  background: rgba(13, 17, 23, 0.72);
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
   backdrop-filter: blur(4px);
-  padding: 3px 8px;
-  border-radius: 5px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-.day-card-body {
-  padding: 12px 13px 14px;
+.meal-type-badge--breakfast { background: rgba(245, 158, 11, 0.85); }
+.meal-type-badge--lunch     { background: rgba(34, 197, 94, 0.85); }
+.meal-type-badge--dinner    { background: rgba(139, 92, 246, 0.85); }
+
+.meal-card-body {
+  padding: 14px 16px 16px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
   flex: 1;
 }
 
 .meal-name {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   line-height: 1.4;
   color: var(--text);
@@ -779,24 +810,11 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--muted);
 }
 
 .meal-calories .material-symbols-outlined { font-size: 13px; color: var(--orange); }
-
-.workout-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10.5px;
-  font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 5px;
-  background: var(--green-bg);
-  color: var(--green);
-  align-self: flex-start;
-}
 
 /* =====================================================================
    DETAIL MODAL
@@ -885,13 +903,17 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
   gap: 20px;
 }
 
-.detail-day-label {
+/* Meal type label in modal */
+.detail-meal-type {
   font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.8px;
-  color: var(--accent);
 }
+
+.detail-meal-type--breakfast { color: var(--breakfast-clr); }
+.detail-meal-type--lunch     { color: var(--lunch-clr); }
+.detail-meal-type--dinner    { color: var(--dinner-clr); }
 
 .detail-meal-name {
   font-size: 20px;
@@ -984,271 +1006,17 @@ input[type="number"]::-webkit-outer-spin-button { opacity: 0.4; }
   white-space: pre-wrap;
 }
 
-.workout-tag-lg {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
-  font-weight: 700;
-  padding: 6px 14px;
-  border-radius: 7px;
-  background: var(--green-bg);
-  color: var(--green);
-  border: 1px solid rgba(63, 185, 80, 0.25);
-}
-
-.workout-tag-lg .material-symbols-outlined { font-size: 15px; }
-
-/* =====================================================================
-   WORKOUT SCREEN
-   ===================================================================== */
-
-.workout-screen {
-  max-width: 560px;
-  margin: 0 auto;
-  padding: 0 20px 100px;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.workout-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 18px 0 12px;
-  gap: 12px;
-}
-
-.workout-section {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 22px 22px 20px;
-  margin-bottom: 16px;
-}
-
-.section-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text);
-  margin: 0 0 4px;
-}
-.section-heading .material-symbols-outlined { font-size: 18px; color: var(--accent); }
-
-.section-sub {
-  font-size: 13px;
-  color: var(--muted);
-  margin: 0 0 20px;
-}
-
-/* Sport sliders */
-.sport-sliders { display: flex; flex-direction: column; gap: 16px; }
-
-.sport-slider {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.sport-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.sport-icon .material-symbols-outlined { font-size: 18px; }
-
-.sport-icon-swim { background: rgba(56,189,248,0.15); color: #38bdf8; }
-.sport-icon-bike { background: rgba(251,146,60,0.15);  color: #fb923c; }
-.sport-icon-run  { background: rgba(74,222,128,0.15);  color: #4ade80; }
-.sport-icon-lift { background: rgba(192,132,252,0.15); color: #c084fc; }
-
-.sport-label {
-  width: 36px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-  flex-shrink: 0;
-}
-
-.slider-track {
-  flex: 1;
-  display: flex;
-  align-items: center;
-}
-
-input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 6px;
-  border-radius: 3px;
-  outline: none;
-  cursor: pointer;
-  transition: opacity 0.15s;
-}
-input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--text);
-  border: 2px solid var(--bg);
-  box-shadow: 0 0 0 2px var(--subtle);
-  cursor: pointer;
-  transition: box-shadow 0.15s;
-}
-input[type="range"]::-webkit-slider-thumb:hover {
-  box-shadow: 0 0 0 3px var(--accent);
-}
-input[type="range"]::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--text);
-  border: 2px solid var(--bg);
-  cursor: pointer;
-}
-
-.sport-duration {
-  width: 60px;
-  text-align: right;
-  font-size: 13px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
-.workout-global-error { margin-bottom: 12px; }
-
-.workout-footer {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 12px 20px 20px;
-  background: linear-gradient(to top, var(--bg) 70%, transparent);
-  max-width: 560px;
-  margin: 0 auto;
-}
-
-/* =====================================================================
-   BOARD SCREEN — DAILY MEALS
-   ===================================================================== */
-
-.meals-row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 24px 20px 60px;
-}
-
-.meal-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  overflow: hidden;
-  cursor: pointer;
-  transition: transform 0.15s, border-color 0.15s;
-}
-.meal-card:hover { transform: translateY(-3px); border-color: var(--subtle); }
-
-.meal-card-image {
-  position: relative;
-  height: 180px;
-  background: var(--surface2);
-  overflow: hidden;
-}
-.meal-card-image .meal-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.meal-img-placeholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--subtle);
-}
-.meal-img-placeholder .material-symbols-outlined { font-size: 40px; }
-
-.meal-type-badge {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  padding: 4px 10px;
-  border-radius: 20px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.badge-breakfast { background: rgba(245,158,11,0.9);  color: #fff; }
-.badge-lunch     { background: rgba(34,197,94,0.9);   color: #fff; }
-.badge-dinner    { background: rgba(139,92,246,0.9);  color: #fff; }
-
-.meal-card-body {
-  padding: 14px 16px 16px;
-}
-.meal-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 8px;
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.meal-calories {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--muted);
-}
-.meal-calories .material-symbols-outlined { font-size: 14px; color: var(--orange, #fb923c); }
-
 /* =====================================================================
    FOCUS + RESPONSIVE
    ===================================================================== */
 
-.workout-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 20px;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--muted);
-}
-.workout-pill .material-symbols-outlined { font-size: 13px; }
-
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-@media (max-width: 700px) {
-  .meals-row { grid-template-columns: 1fr; max-width: 400px; }
-  .workout-footer { max-width: 100%; }
-}
-
 @media (max-width: 600px) {
-  .board-screen { padding: 16px 12px 40px; }
-  .summary-bar  { gap: 8px; flex-wrap: wrap; }
-  .btn-regenerate { margin-left: 0; }
-  .detail-content { padding: 18px 18px 24px; }
+  .board-screen     { padding: 16px 12px 40px; }
+  .summary-bar      { gap: 8px; }
+  .btn-regenerate   { margin-left: 0; }
+  .detail-content   { padding: 18px 18px 24px; }
   .detail-meal-name { font-size: 17px; }
+  .workout-screen   { padding: 0 14px 40px; }
 }
