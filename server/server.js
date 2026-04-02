@@ -8,6 +8,9 @@ const { HumanMessage, SystemMessage, ToolMessage } = require("@langchain/core/me
 const { StateGraph, START, END } = require("@langchain/langgraph");
 const { StructuredTool } = require("@langchain/core/tools");
 const { z } = require("zod");
+const bcrypt = require("bcryptjs");
+const jwt    = require("jsonwebtoken");
+const JWT_SECRET = process.env.JWT_SECRET || "nourishweek_dev_secret";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 
@@ -39,11 +42,17 @@ mongoose
 
 // User — stores biometric profile; calorieTarget is computed server-side via Mifflin-St Jeor
 const userSchema = new mongoose.Schema({
+  email:        { type: String, required: true, unique: true, lowercase: true, trim: true },
+  passwordHash: { type: String, required: true },
   height: { type: Number, required: true, min: 1 }, // cm
   weight: { type: Number, required: true, min: 1 }, // kg
   age:    { type: Number, required: true, min: 1 },
   sex:    { type: String, enum: ["male", "female"], required: true },
   calorieTarget: { type: Number },
+  // Store imperial originals for display
+  heightFt:  { type: Number },
+  heightIn:  { type: Number },
+  weightLbs: { type: Number },
 });
 
 // Mifflin-St Jeor BMR — computed before every save
@@ -53,6 +62,27 @@ userSchema.pre("save", async function () {
 });
 
 const User = mongoose.model("User", userSchema);
+
+// ─── JWT HELPER ───────────────────────────────────────────────────────────────
+
+function signToken(userId) {
+  return jwt.sign({ userId: userId.toString() }, JWT_SECRET, { expiresIn: "30d" });
+}
+
+// ─── AUTH MIDDLEWARE ──────────────────────────────────────────────────────────
+
+function authenticate(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token  = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: "Not authenticated" });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.userId = payload.userId;
+    next();
+  } catch {
+    res.status(401).json({ error: "Invalid or expired token" });
+  }
+}
 
 // DailyPlan — one document per generated day plan, linked to a User
 const dailyPlanSchema = new mongoose.Schema({
@@ -392,6 +422,66 @@ workflow.addEdge("savePlan", END);
 
 const graph = workflow.compile();
 
+// ─── ROUTES: AUTH ─────────────────────────────────────────────────────────────
+
+// POST /auth/register — create account with imperial measurements
+app.post("/auth/register", async (req, res) => {
+  try {
+    const { email, password, heightFt, heightIn, weightLbs, age, sex } = req.body;
+    if (!email || !password || heightFt == null || heightIn == null || weightLbs == null || !age || !sex) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
+
+    const existing = await User.findOne({ email });
+    if (existing) return res.status(400).json({ error: "Email already in use" });
+
+    const height_cm = Math.round((Number(heightFt) * 12 + Number(heightIn)) * 2.54);
+    const weight_kg = Math.round(Number(weightLbs) * 0.453592 * 10) / 10;
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const user = new User({
+      email,
+      passwordHash,
+      height: height_cm,
+      weight: weight_kg,
+      age: Number(age),
+      sex,
+      heightFt: Number(heightFt),
+      heightIn: Number(heightIn),
+      weightLbs: Number(weightLbs),
+    });
+    await user.save();
+
+    res.status(201).json({
+      token: signToken(user._id),
+      userId: user._id,
+      profile: { email, heightFt: user.heightFt, heightIn: user.heightIn, weightLbs: user.weightLbs, age: user.age, sex: user.sex },
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// POST /auth/login — authenticate and receive a JWT
+app.post("/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) return res.status(401).json({ error: "Invalid email or password" });
+
+    const match = await bcrypt.compare(password, user.passwordHash);
+    if (!match) return res.status(401).json({ error: "Invalid email or password" });
+
+    res.json({
+      token: signToken(user._id),
+      userId: user._id,
+      profile: { email: user.email, heightFt: user.heightFt, heightIn: user.heightIn, weightLbs: user.weightLbs, age: user.age, sex: user.sex },
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // ─── ROUTES: USERS ────────────────────────────────────────────────────────────
 
 // POST /users — create a new user profile; calorieTarget is computed by pre-save hook
@@ -419,7 +509,7 @@ app.get("/users/:id", async (req, res) => {
 // ─── ROUTES: DAILY PLANS ──────────────────────────────────────────────────────
 
 // POST /daily-plans — SSE streaming: runs the LangGraph agent and streams progress
-app.post("/daily-plans", async (req, res) => {
+app.post("/daily-plans", authenticate, async (req, res) => {
   res.setHeader("Content-Type",  "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection",    "keep-alive");
@@ -429,7 +519,8 @@ app.post("/daily-plans", async (req, res) => {
   function sendDone(planId) { res.write(`data: ${JSON.stringify({ done: true, planId })}\n\n`); res.end(); }
   function sendError(msg)   { res.write(`data: ${JSON.stringify({ error: msg })}\n\n`); res.end(); }
 
-  const { userId, workouts = {}, foodPreference = "" } = req.body;
+  const userId = req.userId;
+  const { workouts = {}, foodPreference = "" } = req.body;
 
   const user = await User.findById(userId).catch(() => null);
   if (!user) { sendError("User not found"); return; }
