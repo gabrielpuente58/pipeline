@@ -138,18 +138,21 @@ class SearchRecipesTool extends StructuredTool {
   });
 
   async _call({ day, query }) {
-    const target     = _ctx.calorieTargets[day] || 2000;
-    const minCal     = target - 200;
-    const maxCal     = target + 200;
+    // calorieTargets are daily totals — divide by 3 for a single-meal calorie range
+    const dailyTarget = _ctx.calorieTargets[day] || 2000;
+    const mealTarget  = Math.round(dailyTarget / 3);
+    const minCal      = Math.max(100, mealTarget - 400);
+    const maxCal      = mealTarget + 400;
     try {
       const url =
         `https://api.spoonacular.com/recipes/complexSearch` +
         `?apiKey=${SPOONACULAR_KEY}` +
-        `&number=1&addRecipeNutrition=true&type=main course` +
+        `&number=5&addRecipeNutrition=true` +
         `&minCalories=${minCal}&maxCalories=${maxCal}` +
         `&query=${encodeURIComponent(query)}`;
       const res  = await fetch(url);
       const data = await res.json();
+      console.log(`SearchRecipes [${day}] query="${query}" cal=${minCal}-${maxCal} hits=${data.results?.length ?? 0}`);
       const hit  = data.results?.[0];
       return JSON.stringify({
         day,
