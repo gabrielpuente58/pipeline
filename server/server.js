@@ -123,6 +123,7 @@ const _ctx = {
   workouts:       {},
   userId:         "",
   recipeDetails:  {}, // accumulated GetRecipeDetails results keyed by day
+  usedRecipeIds:  new Set(), // prevent duplicate recipes across days
 };
 
 // ─── TOOLS ────────────────────────────────────────────────────────────────────
@@ -153,7 +154,9 @@ class SearchRecipesTool extends StructuredTool {
       const res  = await fetch(url);
       const data = await res.json();
       console.log(`SearchRecipes [${day}] query="${query}" cal=${minCal}-${maxCal} hits=${data.results?.length ?? 0}`);
-      const hit  = data.results?.[0];
+      // Pick first result not already used this week
+      const hit = (data.results || []).find((r) => !_ctx.usedRecipeIds.has(r.id)) || data.results?.[0];
+      if (hit?.id) _ctx.usedRecipeIds.add(hit.id);
       return JSON.stringify({
         day,
         recipeId: hit?.id    ?? 0,
@@ -489,6 +492,7 @@ app.post("/meal-plans", async (req, res) => {
     `- Call only ONE tool per response.\n` +
     `- Read previous tool results carefully to know which day you are on and which phase you are in.\n` +
     `- Never repeat a tool call for a day you already have a result for.\n` +
+    `- Use a DIFFERENT query for each day — vary the cuisine, protein source, or cooking style so the week has variety (e.g. Mon: "grilled chicken Mediterranean", Tue: "salmon teriyaki", Wed: "beef stir fry", Thu: "turkey meatballs", Fri: "shrimp tacos", Sat: "lamb kebabs", Sun: "veggie curry").\n` +
     `- Do not stop until SaveMealPlan has been called.`
   );
 
@@ -505,6 +509,7 @@ app.post("/meal-plans", async (req, res) => {
   _ctx.workouts       = workouts;
   _ctx.userId         = userId;
   _ctx.recipeDetails  = {};
+  _ctx.usedRecipeIds  = new Set();
 
   try {
     sendStatus("Starting meal planning…");
