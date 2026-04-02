@@ -169,7 +169,7 @@ class GetRecipeDetailsTool extends StructuredTool {
   description = "Get full ingredients, instructions, and nutrition for a recipe. Call this after SearchRecipes for each day using the recipeId returned.";
   schema      = z.object({
     day:      z.string().describe("Day of the week: Mon, Tue, Wed, Thu, Fri, Sat, or Sun"),
-    recipeId: z.number().int().describe("The recipeId number returned by SearchRecipes for this day"),
+    recipeId: z.number().int().optional().default(0).describe("The recipeId number returned by SearchRecipes for this day"),
   });
 
   async _call({ day, recipeId }) {
@@ -314,9 +314,18 @@ async function planMealsNode(state) {
 
 async function searchRecipesNode(state) {
   state.sendStatus?.("Finding recipes that fit your targets…");
-  const toolCall   = state.toolCalls.shift(); // consume head of queue
-  const toolResult = await searchRecipesTool.invoke(toolCall.args);
-  const message    = new ToolMessage({
+  const toolCall = state.toolCalls.shift(); // consume head of queue
+
+  let toolResult;
+  try {
+    toolResult = await searchRecipesTool.invoke(toolCall.args);
+  } catch (err) {
+    console.warn("SearchRecipes parse error, using fallback:", err.message);
+    const day = toolCall.args?.day || "Mon";
+    toolResult = await searchRecipesTool.invoke({ day, query: "healthy balanced meal" });
+  }
+
+  const message = new ToolMessage({
     content:      typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult),
     name:         toolCall.name,
     tool_call_id: toolCall.id,
@@ -326,9 +335,19 @@ async function searchRecipesNode(state) {
 
 async function getRecipeDetailsNode(state) {
   state.sendStatus?.("Getting recipe details…");
-  const toolCall   = state.toolCalls.shift();
-  const toolResult = await getRecipeDetailsTool.invoke(toolCall.args);
-  const message    = new ToolMessage({
+  const toolCall = state.toolCalls.shift();
+
+  let toolResult;
+  try {
+    toolResult = await getRecipeDetailsTool.invoke(toolCall.args);
+  } catch (err) {
+    // LLM produced malformed args (e.g. wrong field name) — fall back to day-only call
+    console.warn("GetRecipeDetails parse error, using fallback:", err.message);
+    const day = toolCall.args?.day || "Mon";
+    toolResult = await getRecipeDetailsTool.invoke({ day, recipeId: 0 });
+  }
+
+  const message = new ToolMessage({
     content:      typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult),
     name:         toolCall.name,
     tool_call_id: toolCall.id,
