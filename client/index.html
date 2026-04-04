@@ -11,8 +11,8 @@
 <body>
   <div id="app">
 
-    <!-- ══ SCREEN 1: PROFILE ══ -->
-    <div v-if="screen === 'profile'" class="profile-screen">
+    <!-- ══ SCREEN 1: AUTH ══ -->
+    <div v-if="screen === 'auth'" class="profile-screen">
       <div class="onboard-logo">
         <span class="material-symbols-outlined logo-icon">restaurant</span>
         <span class="logo-word">Nourish<span class="logo-accent">Week</span></span>
@@ -25,88 +25,196 @@
       </div>
 
       <div class="onboard-card">
-        <h2 class="card-heading">Tell us about yourself</h2>
-        <p class="card-sub">We'll calculate your daily calorie target using the Mifflin-St Jeor equation.</p>
+        <!-- Mode toggle tabs -->
+        <div class="auth-tabs">
+          <button
+            class="auth-tab"
+            :class="{ 'auth-tab--active': authMode === 'login' }"
+            @click="authMode = 'login'; errors = {}; globalError = ''"
+            type="button"
+          >Log In</button>
+          <button
+            class="auth-tab"
+            :class="{ 'auth-tab--active': authMode === 'register' }"
+            @click="authMode = 'register'; errors = {}; globalError = ''"
+            type="button"
+          >Sign Up</button>
+        </div>
 
-        <div class="profile-fields">
-          <div class="field-row">
-            <div class="field">
-              <label class="field-label">Height (cm)</label>
-              <input
-                class="field-input"
-                :class="{ invalid: errors.height }"
-                type="number"
-                v-model.number="profile.height"
-                placeholder="e.g. 175"
-                min="1"
-              />
-              <span class="err" v-if="errors.height">{{ errors.height }}</span>
-            </div>
-            <div class="field">
-              <label class="field-label">Weight (kg)</label>
-              <input
-                class="field-input"
-                :class="{ invalid: errors.weight }"
-                type="number"
-                v-model.number="profile.weight"
-                placeholder="e.g. 70"
-                min="1"
-              />
-              <span class="err" v-if="errors.weight">{{ errors.weight }}</span>
-            </div>
+        <!-- ── LOGIN FORM ── -->
+        <div v-if="authMode === 'login'" class="profile-fields">
+          <div class="field">
+            <label class="field-label">Email</label>
+            <input
+              class="field-input"
+              :class="{ invalid: errors.email }"
+              type="email"
+              v-model="email"
+              placeholder="you@example.com"
+              autocomplete="email"
+            />
+            <span class="err" v-if="errors.email">{{ errors.email }}</span>
+          </div>
+
+          <div class="field">
+            <label class="field-label">Password</label>
+            <input
+              class="field-input"
+              :class="{ invalid: errors.password }"
+              type="password"
+              v-model="password"
+              placeholder="••••••••"
+              autocomplete="current-password"
+            />
+            <span class="err" v-if="errors.password">{{ errors.password }}</span>
+          </div>
+
+          <button class="btn-continue" @click="login" :disabled="generating">
+            <span class="material-symbols-outlined" v-if="!generating">login</span>
+            <span class="material-symbols-outlined spin" v-else>progress_activity</span>
+            {{ generating ? 'Signing in…' : 'Log In' }}
+          </button>
+        </div>
+
+        <!-- ── REGISTER FORM ── -->
+        <div v-if="authMode === 'register'" class="profile-fields">
+          <div class="field">
+            <label class="field-label">Email</label>
+            <input
+              class="field-input"
+              :class="{ invalid: errors.email }"
+              type="email"
+              v-model="email"
+              placeholder="you@example.com"
+              autocomplete="email"
+            />
+            <span class="err" v-if="errors.email">{{ errors.email }}</span>
           </div>
 
           <div class="field-row">
+            <div class="field">
+              <label class="field-label">Password</label>
+              <input
+                class="field-input"
+                :class="{ invalid: errors.password }"
+                type="password"
+                v-model="password"
+                placeholder="••••••••"
+                autocomplete="new-password"
+              />
+              <span class="err" v-if="errors.password">{{ errors.password }}</span>
+            </div>
+            <div class="field">
+              <label class="field-label">Confirm Password</label>
+              <input
+                class="field-input"
+                :class="{ invalid: errors.confirmPassword }"
+                type="password"
+                v-model="confirmPassword"
+                placeholder="••••••••"
+                autocomplete="new-password"
+              />
+              <span class="err" v-if="errors.confirmPassword">{{ errors.confirmPassword }}</span>
+            </div>
+          </div>
+
+          <!-- Height row: ft + in side by side -->
+          <div class="field">
+            <label class="field-label">Height</label>
+            <div class="height-row">
+              <div class="height-pair">
+                <input
+                  class="field-input"
+                  :class="{ invalid: errors.heightFt }"
+                  type="number"
+                  v-model.number="heightFt"
+                  placeholder="5"
+                  min="1"
+                  max="8"
+                />
+                <span class="unit-label">ft</span>
+              </div>
+              <div class="height-pair">
+                <input
+                  class="field-input"
+                  :class="{ invalid: errors.heightIn }"
+                  type="number"
+                  v-model.number="heightIn"
+                  placeholder="10"
+                  min="0"
+                  max="11"
+                />
+                <span class="unit-label">in</span>
+              </div>
+            </div>
+            <span class="err" v-if="errors.heightFt">{{ errors.heightFt }}</span>
+            <span class="err" v-if="errors.heightIn && !errors.heightFt">{{ errors.heightIn }}</span>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label class="field-label">Weight</label>
+              <div class="height-pair">
+                <input
+                  class="field-input"
+                  :class="{ invalid: errors.weightLbs }"
+                  type="number"
+                  v-model.number="weightLbs"
+                  placeholder="160"
+                  min="1"
+                />
+                <span class="unit-label">lbs</span>
+              </div>
+              <span class="err" v-if="errors.weightLbs">{{ errors.weightLbs }}</span>
+            </div>
             <div class="field">
               <label class="field-label">Age</label>
               <input
                 class="field-input"
                 :class="{ invalid: errors.age }"
                 type="number"
-                v-model.number="profile.age"
-                placeholder="e.g. 28"
+                v-model.number="age"
+                placeholder="28"
                 min="1"
               />
               <span class="err" v-if="errors.age">{{ errors.age }}</span>
             </div>
-            <div class="field">
-              <label class="field-label">Sex</label>
-              <div class="radio-group" :class="{ invalid: errors.sex }">
-                <label class="radio-label">
-                  <input type="radio" v-model="profile.sex" value="male" />
-                  <span class="radio-text">Male</span>
-                </label>
-                <label class="radio-label">
-                  <input type="radio" v-model="profile.sex" value="female" />
-                  <span class="radio-text">Female</span>
-                </label>
-              </div>
-              <span class="err" v-if="errors.sex">{{ errors.sex }}</span>
-            </div>
           </div>
-        </div>
 
-        <button class="btn-continue" @click="goToWorkout">
-          Continue
-          <span class="material-symbols-outlined">arrow_forward</span>
-        </button>
+          <div class="field">
+            <label class="field-label">Sex</label>
+            <div class="radio-group" :class="{ invalid: errors.sex }">
+              <label class="radio-label">
+                <input type="radio" v-model="sex" value="male" />
+                <span class="radio-text">Male</span>
+              </label>
+              <label class="radio-label">
+                <input type="radio" v-model="sex" value="female" />
+                <span class="radio-text">Female</span>
+              </label>
+            </div>
+            <span class="err" v-if="errors.sex">{{ errors.sex }}</span>
+          </div>
+
+          <button class="btn-continue" @click="register" :disabled="generating">
+            <span class="material-symbols-outlined" v-if="!generating">person_add</span>
+            <span class="material-symbols-outlined spin" v-else>progress_activity</span>
+            {{ generating ? 'Creating account…' : 'Create Account' }}
+          </button>
+        </div>
       </div>
     </div>
 
     <!-- ══ SCREEN 2: WORKOUT INPUT ══ -->
     <div v-if="screen === 'workout'" class="workout-screen">
       <div class="workout-header">
-        <button class="btn-back" @click="goToProfile">
-          <span class="material-symbols-outlined">arrow_back</span>
-          Back
-        </button>
         <div class="onboard-logo small">
           <span class="material-symbols-outlined logo-icon">restaurant</span>
           <span class="logo-word">Nourish<span class="logo-accent">Week</span></span>
         </div>
-        <button class="btn-clear-profile" @click="clearProfile" title="Clear saved profile">
-          <span class="material-symbols-outlined">person_off</span>
-          Change profile
+        <button class="btn-clear-profile" @click="logout" title="Log out">
+          <span class="material-symbols-outlined">logout</span>
+          Log out
         </button>
       </div>
 

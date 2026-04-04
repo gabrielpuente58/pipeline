@@ -152,27 +152,40 @@ class SearchRecipesTool extends StructuredTool {
   });
 
   async _call({ mealType, query }) {
-    const target = _ctx.mealTargets[mealType] || 600;
-    const minCal = Math.max(100, target - 300);
-    const maxCal = target + 300;
-
-    try {
+    const doSearch = async (q) => {
       const url =
         `https://api.spoonacular.com/recipes/complexSearch` +
         `?apiKey=${SPOONACULAR_KEY}` +
-        `&number=3` +
-        `&minCalories=${minCal}&maxCalories=${maxCal}` +
-        `&query=${encodeURIComponent(query)}`;
+        `&number=5` +
+        `&addRecipeInformation=false` +
+        `&query=${encodeURIComponent(q)}`;
       const res  = await fetch(url);
       const data = await res.json();
-
-      if (data.status === "failure" || data.code === 402) {
+      if (data.status === "failure" || data.code === 402)
         console.error("Spoonacular error:", data.message || data);
+      console.log(`SearchRecipes [${mealType}] query="${q}" hits=${data.results?.length ?? 0}`);
+      return data.results || [];
+    };
+
+    try {
+      // Strip filler adjectives the LLM tends to prepend
+      const cleaned = query.replace(/\b(high protein|low carb|healthy|nutritious|calorie)\b/gi, '').replace(/\s+/g, ' ').trim();
+
+      let results = await doSearch(cleaned);
+
+      // Fallback 1: first 3 words of cleaned query
+      if (!results.length) {
+        const short = cleaned.split(' ').slice(0, 3).join(' ');
+        if (short !== cleaned) results = await doSearch(short);
       }
 
-      console.log(`SearchRecipes [${mealType}] query="${query}" cal=${minCal}-${maxCal} hits=${data.results?.length ?? 0}`);
+      // Fallback 2: single-word fallback per meal type
+      if (!results.length) {
+        const defaults = { breakfast: 'eggs', lunch: 'chicken', dinner: 'salmon' };
+        results = await doSearch(defaults[mealType] || 'chicken');
+      }
 
-      const hit = (data.results || []).find((r) => !_ctx.usedRecipeIds.has(r.id)) || data.results?.[0];
+      const hit = results.find((r) => !_ctx.usedRecipeIds.has(r.id)) || results[0];
       if (hit?.id) _ctx.usedRecipeIds.add(hit.id);
 
       return JSON.stringify({
@@ -567,7 +580,8 @@ app.post("/daily-plans", authenticate, async (req, res) => {
     `7. Call SaveDailyPlan to finish\n\n` +
     `Rules:\n` +
     `- Call exactly ONE tool per response\n` +
-    `- Use meal-appropriate queries that match the user's food preferences\n` +
+    `- Use SHORT queries (2-3 words max, e.g. "chicken salad", "salmon pasta", "oatmeal")\n` +
+    `- Do NOT add words like "high protein", "healthy", or "low carb" to queries\n` +
     `- Use DIFFERENT queries for each meal\n` +
     `- Do not stop until SaveDailyPlan is called`
   );

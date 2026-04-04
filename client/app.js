@@ -4,10 +4,20 @@ createApp({
   data() {
     return {
       apiUrl: 'http://localhost:8080',
-      screen: 'profile', // 'profile' | 'workout' | 'loading' | 'board'
+      screen: 'auth', // 'auth' | 'workout' | 'loading' | 'board'
 
-      profile: { height: '', weight: '', age: '', sex: '' },
+      // Auth state
+      authMode: 'login', // 'login' | 'register'
+      token: null,
       userId: null,
+      email: '',
+      password: '',
+      confirmPassword: '',
+      heightFt: '',
+      heightIn: '',
+      weightLbs: '',
+      age: '',
+      sex: '',
 
       workouts: { swim: 0, bike: 0, run: 0, lift: 0 }, // minutes
       foodPreference: '',
@@ -29,11 +39,12 @@ createApp({
 
   mounted() {
     try {
-      const saved = JSON.parse(localStorage.getItem('nw_profile') || 'null');
-      if (saved) {
-        this.profile = { height: saved.height, weight: saved.weight, age: saved.age, sex: saved.sex };
-        this.userId  = saved.userId || null;
-        this.screen  = 'workout';
+      const saved = JSON.parse(localStorage.getItem('nw_auth') || 'null');
+      if (saved?.token) {
+        this.token  = saved.token;
+        this.userId = saved.userId;
+        this.email  = saved.email || '';
+        this.screen = 'workout';
       }
     } catch {}
   },
@@ -72,34 +83,114 @@ createApp({
       return `background: linear-gradient(to right, ${color} ${pct}%, var(--surface2) ${pct}%)`;
     },
 
-    // ── Navigation ────────────────────────────────────────────────────────────
+    // ── Auth ──────────────────────────────────────────────────────────────────
 
-    goToProfile() {
-      this.screen = 'profile';
-      this.errors = {};
-      this.globalError = '';
-    },
-
-    goToWorkout() {
+    async login() {
       const e = {};
-      if (!this.profile.height || this.profile.height <= 0) e.height = 'Required, must be > 0';
-      if (!this.profile.weight || this.profile.weight <= 0) e.weight = 'Required, must be > 0';
-      if (!this.profile.age    || this.profile.age    <= 0) e.age    = 'Required, must be > 0';
-      if (!this.profile.sex) e.sex = 'Please select';
+      if (!this.email.trim())    e.email    = 'Email is required';
+      if (!this.password)        e.password = 'Password is required';
       this.errors = e;
       if (Object.keys(e).length) return;
-      this.screen = 'workout';
+
+      this.generating  = true;
+      this.globalError = '';
+
+      try {
+        const res  = await fetch(`${this.apiUrl}/auth/login`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ email: this.email, password: this.password }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Login failed');
+
+        this._saveAuth(data);
+        this.screen = 'workout';
+      } catch (err) {
+        this.globalError = err.message;
+      } finally {
+        this.generating = false;
+      }
     },
 
-    clearProfile() {
-      localStorage.removeItem('nw_profile');
-      this.profile     = { height: '', weight: '', age: '', sex: '' };
-      this.userId      = null;
-      this.plan        = null;
-      this.errors      = {};
+    async register() {
+      const e = {};
+      if (!this.email.trim())               e.email           = 'Email is required';
+      if (!this.password)                   e.password        = 'Password is required';
+      if (this.password !== this.confirmPassword) e.confirmPassword = 'Passwords do not match';
+      if (!this.heightFt || this.heightFt < 1 || this.heightFt > 8) e.heightFt = 'Enter feet (1–8)';
+      if (this.heightIn === '' || this.heightIn < 0 || this.heightIn > 11) e.heightIn = 'Enter inches (0–11)';
+      if (!this.weightLbs || this.weightLbs <= 0) e.weightLbs = 'Required, must be > 0';
+      if (!this.age       || this.age       <= 0) e.age       = 'Required, must be > 0';
+      if (!this.sex)                        e.sex             = 'Please select';
+      this.errors = e;
+      if (Object.keys(e).length) return;
+
+      this.generating  = true;
       this.globalError = '';
-      this.screen      = 'profile';
+
+      try {
+        const res  = await fetch(`${this.apiUrl}/auth/register`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            email:     this.email,
+            password:  this.password,
+            heightFt:  this.heightFt,
+            heightIn:  this.heightIn,
+            weightLbs: this.weightLbs,
+            age:       this.age,
+            sex:       this.sex,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Registration failed');
+
+        this._saveAuth(data);
+        this.screen = 'workout';
+      } catch (err) {
+        this.globalError = err.message;
+      } finally {
+        this.generating = false;
+      }
     },
+
+    _saveAuth(data) {
+      this.token  = data.token;
+      this.userId = data.userId || data._id;
+      const payload = {
+        token:     data.token,
+        userId:    this.userId,
+        email:     this.email,
+        heightFt:  data.heightFt  || this.heightFt,
+        heightIn:  data.heightIn  || this.heightIn,
+        weightLbs: data.weightLbs || this.weightLbs,
+        age:       data.age       || this.age,
+        sex:       data.sex       || this.sex,
+      };
+      localStorage.setItem('nw_auth', JSON.stringify(payload));
+    },
+
+    logout() {
+      localStorage.removeItem('nw_auth');
+      this.token          = null;
+      this.userId         = null;
+      this.email          = '';
+      this.password       = '';
+      this.confirmPassword = '';
+      this.heightFt       = '';
+      this.heightIn       = '';
+      this.weightLbs      = '';
+      this.age            = '';
+      this.sex            = '';
+      this.plan           = null;
+      this.errors         = {};
+      this.globalError    = '';
+      this.authMode       = 'login';
+      this.screen         = 'auth';
+    },
+
+    // ── Navigation ────────────────────────────────────────────────────────────
 
     regenerate() {
       this.plan        = null;
@@ -134,18 +225,6 @@ createApp({
       this.statusMessage = 'Initializing…';
 
       try {
-        if (!this.userId) {
-          const userRes = await fetch(`${this.apiUrl}/users`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(this.profile),
-          });
-          const userData = await userRes.json();
-          if (!userRes.ok) throw new Error(userData.error);
-          this.userId = userData._id;
-          localStorage.setItem('nw_profile', JSON.stringify({ ...this.profile, userId: this.userId }));
-        }
-
         await this.streamDailyPlan();
       } catch (err) {
         this.globalError = err.message;
@@ -158,9 +237,11 @@ createApp({
       return new Promise((resolve, reject) => {
         fetch(`${this.apiUrl}/daily-plans`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${this.token}`,
+          },
           body: JSON.stringify({
-            userId:         this.userId,
             workouts:       this.workouts,
             foodPreference: this.foodPreference,
           }),
@@ -200,7 +281,9 @@ createApp({
     },
 
     async loadPlan(planId) {
-      const res  = await fetch(`${this.apiUrl}/daily-plans/${planId}`);
+      const res  = await fetch(`${this.apiUrl}/daily-plans/${planId}`, {
+        headers: { 'Authorization': `Bearer ${this.token}` },
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       this.plan       = data;

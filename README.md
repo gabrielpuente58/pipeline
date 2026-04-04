@@ -1,213 +1,74 @@
-# Race Day Planner — Ironman 70.3
+# NourishWeek
 
-A full-stack web application for planning and preparing for an Ironman 70.3 triathlon. Athletes can manage their profile, track gear across all race segments, generate an AI-powered carb-loading meal plan, and follow a personalized race preparation timeline.
+A meal planning app for triathletes. Enter your workouts and food preferences — an AI agent finds real recipes for breakfast, lunch, and dinner based on your calorie needs.
 
-**Stack:** Node.js / Express · MongoDB / Mongoose · LangGraph · Ollama · Vue.js (CDN)
+**Stack:** Express · MongoDB · LangGraph · Ollama · Spoonacular · Vue.js
 
 ---
 
 ## Resources
 
-### Athlete
-The single athlete profile for the application. Stores personal details and race information.
+**User** — athlete account with biometrics. Calorie target auto-calculated via Mifflin-St Jeor on save.
+`email, passwordHash, height, weight, age, sex, calorieTarget, heightFt, heightIn, weightLbs`
 
-| Attribute | Type | Description |
-|---|---|---|
-| name | String | Full name of the athlete |
-| gender | String | `male`, `female`, or `prefer-not-to-say` |
-| height | Number | Height in inches (36–108) |
-| weight | Number | Weight in pounds (50–500) |
-| profilePicture | String | URL to profile image |
-| raceDate | Date | Date of the race |
-| raceLocation | String | City/venue of the race |
-
-### ChecklistItem
-Individual gear or task items organized by race segment.
-
-| Attribute | Type | Description |
-|---|---|---|
-| category | String | `swim`, `bike`, `run`, `t1`, `t2`, or `nutrition` |
-| name | String | Name of the item or task |
-| checked | Boolean | Whether the item is packed/complete |
-| purchased | Boolean | Whether the item has been purchased |
-| weeksBeforeNeeded | Number | How many weeks before race day this is needed |
-| isDefault | Boolean | Whether this was seeded as a default item |
-
-### MealPlan
-AI-generated 3-day carb-loading meal plan linked to an athlete.
-
-| Attribute | Type | Description |
-|---|---|---|
-| athleteId | ObjectId | Reference to the Athlete |
-| days | Array | Array of day objects, each with a label and meals array |
-| days[].label | String | e.g. "3 Days Before Race" |
-| days[].meals | Array | Meals with time, name, description, carbs, calories |
-| days[].totalCarbs | Number | Total carbohydrates for the day (grams) |
-| days[].totalCalories | Number | Total calories for the day |
-| notes | String | General nutrition notes from the AI |
-
-### Reminder
-AI-generated race preparation reminders with timing and priority.
-
-| Attribute | Type | Description |
-|---|---|---|
-| athleteId | ObjectId | Reference to the Athlete |
-| title | String | Short reminder title |
-| message | String | Detailed reminder message |
-| category | String | `purchase`, `maintenance`, `training`, `nutrition`, or `logistics` |
-| daysBeforeRace | Number | How many days before race day this applies |
-| priority | String | `high`, `medium`, or `low` |
+**DailyPlan** — one AI-generated meal plan per request, linked to a User.
+`userId, date, totalCalories, workouts { swim, bike, run, lift }, meals [{ mealType, name, imageUrl, calories, macros, ingredients, instructions }]`
 
 ---
 
-## REST API Endpoints
+## API Endpoints
 
-| Method | Path | Description |
-|---|---|---|
-| POST | `/athlete` | Create a new athlete profile |
-| GET | `/athlete` | Retrieve the athlete profile |
-| PUT | `/athlete/:id` | Update the athlete profile |
-| GET | `/checklist` | Get all checklist items sorted by category |
-| PUT | `/checklist/:id` | Update a checklist item (toggle checked/purchased) |
-| DELETE | `/checklist/:id` | Delete a checklist item |
-| POST | `/generate-plan` | Trigger the AI agent to generate a meal plan and reminders |
-| GET | `/meal-plan` | Retrieve the most recently generated meal plan |
-| GET | `/reminders` | Retrieve all reminders sorted by days before race |
+| Method | Path               | Description                        |
+| ------ | ------------------ | ---------------------------------- |
+| POST   | `/auth/register`   | Create account                     |
+| POST   | `/auth/login`      | Login, receive JWT                 |
+| POST   | `/users`           | Create user profile                |
+| GET    | `/users/:id`       | Get user profile                   |
+| POST   | `/daily-plans`     | Generate meal plan (auth required) |
+| GET    | `/daily-plans/:id` | Fetch saved plan                   |
 
 ---
 
-## Data Models (Mongoose Schemas)
+## Data Models
 
-### Athlete Schema
 ```js
-{
-  name:           { type: String, required: true, trim: true },
-  gender:         { type: String, required: true, enum: ['male','female','prefer-not-to-say'] },
-  height:         { type: Number, required: true, min: 36, max: 108 },
-  weight:         { type: Number, required: true, min: 50, max: 500 },
-  profilePicture: { type: String, default: '' },
-  raceDate:       { type: Date, required: true },
-  raceLocation:   { type: String, required: true, trim: true }
-}
-```
+// User
+{ email, passwordHash, height, weight, age, sex, calorieTarget, heightFt, heightIn, weightLbs }
 
-### ChecklistItem Schema
-```js
-{
-  category:          { type: String, required: true, enum: ['swim','bike','run','t1','t2','nutrition'] },
-  name:              { type: String, required: true, trim: true },
-  checked:           { type: Boolean, default: false },
-  purchased:         { type: Boolean, default: false },
-  weeksBeforeNeeded: { type: Number, default: 1, min: 0, max: 52 },
-  isDefault:         { type: Boolean, default: false }
-}
-```
-
-### MealPlan Schema
-```js
-{
-  athleteId: { type: ObjectId, ref: 'Athlete', required: true },
-  days: [{
-    label:          String,
-    meals: [{ time, name, description, carbs, calories }],
-    totalCarbs:     Number,
-    totalCalories:  Number
-  }],
-  notes: { type: String, default: '' }
-}
-```
-
-### Reminder Schema
-```js
-{
-  athleteId:      { type: ObjectId, ref: 'Athlete', required: true },
-  title:          { type: String, required: true },
-  message:        { type: String, required: true },
-  category:       { type: String, required: true, enum: ['purchase','maintenance','training','nutrition','logistics'] },
-  daysBeforeRace: { type: Number, required: true, min: 0 },
-  priority:       { type: String, required: true, enum: ['high','medium','low'] }
-}
+// DailyPlan
+{ userId, date, totalCalories, workouts: { swim, bike, run, lift },
+  meals: [{ mealType, name, imageUrl, calories, macros: { protein, carbs, fat }, ingredients, instructions }] }
 ```
 
 ---
 
 ## Agentic Workflow
 
-The AI agent is triggered via `POST /generate-plan`. It uses **LangGraph** with **ChatOllama** (llama3.1 on golem) to produce a personalized meal plan and race preparation reminders for the athlete.
+Triggered by `POST /daily-plans`. The LangGraph agent calls the LLM repeatedly — each turn the LLM picks one tool to call until all 3 meals are found and saved.
 
-### Tools
+**Tools:**
 
-**`GenerateMealPlanTool`**
-- Schema: `{ weight: number, gender: enum, raceLocation: string }`
-- Purpose: Provides structured context to the LLM to generate a 3-day carb-loading meal plan
-
-**`GenerateRemindersTool`**
-- Schema: `{ daysUntilRace: number, raceLocation: string, athleteName: string }`
-- Purpose: Provides structured context to the LLM to generate a timeline of race preparation reminders
-
-### Graph Nodes
-
-| Node | Description |
-|---|---|
-| `analyzeAthleteNode` | Reads athlete state, determines what is missing, binds the appropriate tools, and calls the LLM |
-| `generateMealPlanNode` | Executes `GenerateMealPlanTool`, sends result to LLM, parses and stores the meal plan in state |
-| `generateRemindersNode` | Executes `GenerateRemindersTool`, sends result to LLM, parses and stores reminders in state |
-| `submitResultsNode` | Terminal node — persists final meal plan and reminders to MongoDB |
+- `SearchRecipes { mealType, query }` — searches Spoonacular, falls back to simpler queries if 0 hits
+- `GetRecipeDetails { mealType, recipeId }` — fetches ingredients, macros, instructions
+- `SaveDailyPlan {}` — writes the 3 meals to MongoDB
 
 ### Agent Graph
 
-```
-         START
-           │
-           ▼ (static)
-    ┌─────────────────┐
-    │  analyzeAthlete  │◄──────────────────────┐
-    └─────────────────┘                         │
-           │                                    │
-    routingFunction (conditional)               │
-           │                                    │
-     ┌─────┴──────┐                             │
-     ▼            ▼                             │
-generateMealPlan  generateReminders             │
-     │            │                             │
-     └─────┬──────┘                             │
-           │ (static, loop back) ───────────────┘
-           │
-    (when both done)
-           ▼ (conditional)
-    ┌─────────────────┐
-    │  submitResults   │
-    └─────────────────┘
-           │ (static)
-           ▼
-          END
-```
+![Agent Graph](images/55B5861B-9120-4749-9CEB-DB6FA0F4DFFB_4_5005_c.jpeg)
 
-### Routing Function (`routingFunction`)
-
-Inspects graph state after `analyzeAthleteNode`:
-- If both `mealPlan` and `reminders` are populated → route to `submitResults`
-- If a `generate_meal_plan` tool call is pending → route to `generateMealPlanNode`
-- If a `generate_reminders` tool call is pending → route to `generateRemindersNode`
-- Otherwise → loop back to `analyzeAthlete` to retry
+```mermaid
+flowchart TD
+    START([START]) --> planMeals
+    planMeals["planMeals\nLLM picks next tool"]
+    planMeals -->|SearchRecipes| searchRecipes --> planMeals
+    planMeals -->|GetRecipeDetails| getRecipeDetails --> planMeals
+    planMeals -->|SaveDailyPlan| savePlan --> END([END])
+    planMeals -->|no tool calls| planMeals
+    planMeals -->|result set| END
+```
 
 ---
 
-## Running Locally
+## Wireframes
 
-```bash
-# Install server dependencies
-cd server
-npm install
-
-# Set up environment
-cp .env .env.local   # edit as needed
-# Requires: MongoDB running locally, Ollama on golem
-
-# Start the server
-node server.js
-
-# Open the client
-open client/index.html
-# or serve it with: npx serve client
-```
+![Wireframes](images/1C5C9E02-EFCF-49DF-B1DA-A72CA3548877_4_5005_c.jpeg)
