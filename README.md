@@ -56,17 +56,6 @@ Triggered by `POST /daily-plans`. The LangGraph agent calls the LLM repeatedly â
 
 ![Agent Graph](images/55B5861B-9120-4749-9CEB-DB6FA0F4DFFB_4_5005_c.jpeg)
 
-```mermaid
-flowchart TD
-    START([START]) --> planMeals
-    planMeals["planMeals\nLLM picks next tool"]
-    planMeals -->|SearchRecipes| searchRecipes --> planMeals
-    planMeals -->|GetRecipeDetails| getRecipeDetails --> planMeals
-    planMeals -->|SaveDailyPlan| savePlan --> END([END])
-    planMeals -->|no tool calls| planMeals
-    planMeals -->|result set| END
-```
-
 ---
 
 ## Wireframes
